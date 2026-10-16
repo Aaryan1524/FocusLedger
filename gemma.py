@@ -6,13 +6,59 @@ end-of-day report writer), and the two functions that build on them.
 """
 
 import json
+import os
 import re
 
 import requests
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "gemma3:12b"
+OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
+MODEL = os.environ.get("FL_MODEL", "gemma3:12b")
 TEMPERATURE = 0.2
+
+
+def check_ollama(timeout=1.5):
+    """Inspect local Ollama daemon and verify the configured Gemma model is available.
+
+    Returns a dict:
+      {"server_ok": bool, "model_ok": bool, "model": str, "models": list, "detail": str}
+    """
+    try:
+        r = requests.get(OLLAMA_TAGS_URL, timeout=timeout)
+        r.raise_for_status()
+        names = [m.get("name", "") for m in r.json().get("models", [])]
+    except Exception:
+        return {
+            "server_ok": False,
+            "model_ok": False,
+            "model": MODEL,
+            "models": [],
+            "detail": "Ollama offline — click Start Ollama",
+        }
+    if MODEL in names:
+        return {
+            "server_ok": True,
+            "model_ok": True,
+            "model": MODEL,
+            "models": names,
+            "detail": f"{MODEL} ready",
+        }
+    gemma_alts = [n for n in names if n.startswith("gemma")]
+    if gemma_alts:
+        return {
+            "server_ok": True,
+            "model_ok": True,
+            "model": gemma_alts[0],
+            "models": names,
+            "detail": f"{gemma_alts[0]} ready",
+        }
+    return {
+        "server_ok": True,
+        "model_ok": False,
+        "model": MODEL,
+        "models": names,
+        "detail": f"{MODEL} missing — run: ollama pull {MODEL}",
+    }
 
 
 def gemma(prompt, system="", fmt=None):
@@ -227,7 +273,7 @@ if __name__ == "__main__":
     sample_a = {
         "t": "14:02",
         "app": "Code",
-        "title": "focusledger.py — 305Gemma",
+        "title": "focusledger.py — FocusLedger",
         "text": (
             "focusledger.py\n"
             "def idle_seconds():\n"
@@ -237,7 +283,7 @@ if __name__ == "__main__":
             "def is_blocked(app, tit1e):\n"
             "  retvrn any(w in t for w in B\n"
             "PROBLEMS  OUTPUT  TERM1NAL\n"
-            "venv (305Gemma-efficiencyproj)\n"
+            "venv (FocusLedger)\n"
             "Ln 42, Col 17  Spaces: 4  UTF-8"
         ),
     }

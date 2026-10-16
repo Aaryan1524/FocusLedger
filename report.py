@@ -17,10 +17,11 @@ from jinja2 import Environment, FileSystemLoader
 
 import gemma
 
-LEDGER_PATH = "ledger.jsonl"
-TEMPLATE_DIR = "templates"
+BASE = os.path.dirname(os.path.abspath(__file__))
+LEDGER_PATH = os.path.join(BASE, "ledger.jsonl")
+TEMPLATE_DIR = os.path.join(BASE, "templates")
 TEMPLATE_NAME = "report.html"
-OUT_PATH = "report.html"
+OUT_PATH = os.path.join(BASE, "report.html")
 
 # Category → display label + accent color. Kept in sync with CHECKPOINT_SYS.
 # Dark-surface categorical palette, validated (lightness band, chroma floor,
@@ -112,6 +113,11 @@ def meta_for(category):
     return CATEGORY_META.get(category, UNKNOWN_META)
 
 
+def _disp_min(val):
+    """Ensure positive sub-minute durations (e.g. 0.5m in Quick Test) display as at least 1m."""
+    return max(1, round(val)) if val > 0 else 0
+
+
 def build_report(path=LEDGER_PATH):
     """Assemble everything the template needs: facts from the ledger + Gemma's synthesis."""
     rows = load_rows(path)
@@ -132,15 +138,17 @@ def build_report(path=LEDGER_PATH):
             "key": k,
             "label": meta_for(k)["label"],
             "color": meta_for(k)["color"],
-            "minutes": round(v),
-            "pct": round(100 * v / total_min) if total_min else 0,
+            "minutes": _disp_min(v),
+            "pct": max(1, round(100 * v / total_min)) if total_min else 0,
         }
         for k, v in sorted(cat_min.items(), key=lambda kv: -kv[1])
-        if round(v) > 0
+        if v > 0
     ]
 
     # Cognitive Metrics (WHOOP-style Trio & Health Monitors)
     cognitive_strain = min(21.0, round((total_min / 60) * 2.2 + (aligned_min / 60) * 1.8, 1)) if total_min else 0.0
+    if total_min > 0 and cognitive_strain == 0.0:
+        cognitive_strain = 0.5
 
     # Context switching / Friction index (unique activities / hour)
     unique_acts = set(c.get("activity", "") for s in sessions for c in s["checkpoints"] if c.get("activity"))
@@ -157,7 +165,7 @@ def build_report(path=LEDGER_PATH):
                     max_streak_min = curr_streak
             else:
                 curr_streak = 0
-    max_streak_min = round(max_streak_min)
+    max_streak_min = _disp_min(max_streak_min)
 
     # Peak Productivity Window
     peak_window = "N/A"
@@ -165,6 +173,8 @@ def build_report(path=LEDGER_PATH):
         best_sess = max(sessions, key=lambda s: sum(1 for c in s["checkpoints"] if c.get("aligned")))
         if best_sess.get("start") and best_sess.get("end"):
             peak_window = f"{best_sess['start']} – {best_sess['end']}"
+        elif best_sess.get("start"):
+            peak_window = f"{best_sess['start']} – active"
 
     # Gemma call site #2 — synthesize the whole day. Degrade gracefully if it fails.
     try:
@@ -191,10 +201,10 @@ def build_report(path=LEDGER_PATH):
         "goals": goals,
         "sessions": sessions,
         "categories": categories,
-        "total_min": round(total_min),
-        "aligned_min": round(aligned_min),
-        "drift_min": round(cat_min.get("drift", 0)),
-        "deep_min": round(cat_min.get("deep_work", 0)),
+        "total_min": _disp_min(total_min),
+        "aligned_min": _disp_min(aligned_min),
+        "drift_min": _disp_min(cat_min.get("drift", 0)),
+        "deep_min": _disp_min(cat_min.get("deep_work", 0)),
         "focus_score": focus_score,
         "cognitive_strain": cognitive_strain,
         "goal_completion": goal_completion,

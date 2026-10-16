@@ -8,6 +8,8 @@ gates the capture pipeline below it.
 import hashlib
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -21,6 +23,7 @@ import Quartz
 import gemma
 import vision_ocr
 
+BASE = os.path.dirname(os.path.abspath(__file__))
 DEV_MODE = bool(os.environ.get("FL_DEV"))
 
 if DEV_MODE:
@@ -34,7 +37,7 @@ else:
     IDLE_CLOSE = 600
     CHECKPOINT_INTERVAL = 1800    # 30 min in real use
 
-LEDGER_PATH = "ledger.jsonl"
+LEDGER_PATH = os.environ.get("FL_LEDGER_PATH") or os.path.join(BASE, "ledger.jsonl")
 
 
 def idle_seconds():
@@ -54,7 +57,7 @@ def frontmost():
     judge the app the user is actually in front of.
     """
     app = NSWorkspace.sharedWorkspace().frontmostApplication()
-    name = app.localizedName()
+    name = app.localizedName() if app else "Unknown"
     title = ""
     wins = Quartz.CGWindowListCopyWindowInfo(
         Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
@@ -80,13 +83,14 @@ def is_blocked(app, title):
     return any(w in t for w in BLOCKED_TITLE_WORDS)
 
 
-CAPTURE_DIR = "captures"
+CAPTURE_DIR = os.path.join(BASE, "captures")
 
 # In-memory buffer of OCR'd samples awaiting the next 30-min checkpoint.
 # Each item: {"t": "HH:MM:SS", "app": ..., "title": ..., "text": ...}
 # No image ever lives here — pixels are gone before this list grows.
 BUFFER = []
 _last_hash = None
+_flush_requested = False
 
 # A 30-min block at POLL_INTERVAL=10 is up to 180 ticks; that many samples
 # makes a prompt Gemma can't finish inside its 180s timeout. Cap the buffer
@@ -95,7 +99,13 @@ _last_hash = None
 MAX_BUFFER = 20
 
 
-def capture_tick():
+def _on_sigusr1(signum, frame):
+    """Signal handler for live on-demand checkpoint flushing (e.g. 'View report')."""
+    global _flush_requested
+    _flush_requested = True
+
+
+def capture_tick(force=False):
     """One capture opportunity: identify the focused window, respect the blocklist,
     screenshot only on change, OCR it, delete the image immediately, buffer the text.
 
@@ -109,10 +119,11 @@ def capture_tick():
         return
     print(f"👁 {app} — {title}")
 
+    os.makedirs(CAPTURE_DIR, exist_ok=True)
     with mss.MSS() as sct:
         img = sct.grab(sct.monitors[1])
     digest = hashlib.md5(img.rgb).hexdigest()
-    if digest == _last_hash:
+    if not force and digest == _last_hash:
         print("· unchanged")
         return
     _last_hash = digest
@@ -142,9 +153,11 @@ def _hms(t):
 
 
 def _duration(start, end):
-    secs = int((end - start).total_seconds())
+    secs = max(0, int((end - start).total_seconds()))
     h, rem = divmod(secs, 3600)
     m, _ = divmod(rem, 60)
+    if h == 0 and m == 0 and secs > 0:
+        return "<1m"
     return f"{h}h {m}m"
 
 
@@ -153,6 +166,17 @@ def append_ledger(obj):
     that ever touches disk — verdicts and session markers, never pixels or raw text."""
     with open(LEDGER_PATH, "a") as f:
         f.write(json.dumps(obj) + "\n")
+
+
+def reset_todays_ledger():
+    """Archive any existing ledger.jsonl to ledger.prev.jsonl and start fresh."""
+    if os.path.exists(LEDGER_PATH):
+        prev = os.path.join(os.path.dirname(os.path.abspath(LEDGER_PATH)), "ledger.prev.jsonl")
+        try:
+            shutil.copy2(LEDGER_PATH, prev)
+            os.remove(LEDGER_PATH)
+        except OSError:
+            pass
 
 
 def load_todays_goals():
@@ -200,18 +224,19 @@ def run_checkpoint(goals, since=None, until=None, reason=""):
     a session closes isn't counted as work.
     """
     if not BUFFER:
-        return
+        return False
     n = len(BUFFER)
     now = datetime.now()
     end = until or now
-    minutes = round((end - since).total_seconds() / 60, 1) if since else round(n * POLL_INTERVAL / 60, 1)
+    raw_min = (end - since).total_seconds() / 60 if since else (n * POLL_INTERVAL / 60)
+    minutes = max(0.5, round(raw_min, 1))
     tag = f" ({reason})" if reason else ""
     print(f"🧠 checkpoint{tag}: judging {n} samples with Gemma…")
     try:
         verdict = gemma.checkpoint(goals, BUFFER)
     except Exception as e:
         print(f"⚠ checkpoint failed ({e}); keeping buffer for next attempt")
-        return
+        return False
     append_ledger({
         "type": "checkpoint",
         "t": _hms(now),
@@ -222,10 +247,12 @@ def run_checkpoint(goals, since=None, until=None, reason=""):
     BUFFER.clear()
     print(f"📒 verdict: {verdict.get('category')} | aligned={verdict.get('aligned')} "
           f"| {verdict.get('activity')}")
+    return True
 
 
 def main():
     """Session state machine: poll idle time, open/close sessions, drive capture_tick()."""
+    global _flush_requested
     session = None  # {"start": datetime} while open, else None
     last_checkpoint = None  # datetime of the last checkpoint within the current session
 
@@ -234,6 +261,8 @@ def main():
         sys.stdout.reconfigure(line_buffering=True)
     except AttributeError:
         pass
+
+    signal.signal(signal.SIGUSR1, _on_sigusr1)
 
     os.makedirs(CAPTURE_DIR, exist_ok=True)
     print(f"FocusLedger session manager starting (DEV_MODE={DEV_MODE})")
@@ -273,10 +302,30 @@ def main():
                         run_checkpoint(goals, since=last_checkpoint, until=now)
                         last_checkpoint = now
 
-            time.sleep(POLL_INTERVAL)
+            # Sleep in 0.25s slices so SIGUSR1 (live report flush) is serviced immediately
+            waited = 0.0
+            while waited < POLL_INTERVAL:
+                if _flush_requested:
+                    _flush_requested = False
+                    now = datetime.now()
+                    if session is None:
+                        session = {"start": now}
+                        last_checkpoint = now
+                        append_ledger({"type": "session_open", "t": _hms(now)})
+                        print(f"▶ session opened {_hms(now)}")
+                    if not BUFFER:
+                        capture_tick(force=True)
+                    run_checkpoint(goals, since=last_checkpoint or now, until=now, reason="live report")
+                    last_checkpoint = now
+                    print("✓ checkpoint flushed")
+                    break
+                time.sleep(0.25)
+                waited += 0.25
     except KeyboardInterrupt:
         if session is not None:
             now = datetime.now()
+            if not BUFFER:
+                capture_tick(force=True)
             run_checkpoint(goals, since=last_checkpoint, until=now, reason="shutdown")  # don't lose the last buffer
             dur = _duration(session["start"], now)
             append_ledger({"type": "session_close", "t": _hms(now), "duration": dur})

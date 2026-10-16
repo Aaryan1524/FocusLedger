@@ -23,17 +23,16 @@ TEMPLATE_DIR = os.path.join(BASE, "templates")
 TEMPLATE_NAME = "report.html"
 OUT_PATH = os.path.join(BASE, "report.html")
 
-# Category → display label + accent color. Kept in sync with CHECKPOINT_SYS.
-# Dark-surface categorical palette, validated (lightness band, chroma floor,
-# CVD separation, contrast ≥3:1 on #14191f).
+# Category → display label + color. Colors are CSS variables defined in the
+# template (Apple system colors, with light and dark variants).
 CATEGORY_META = {
-    "deep_work":     {"label": "Deep work",     "color": "#D8C3A5"}, # Warm nude / almond
-    "learning":      {"label": "Learning",      "color": "#C5A880"}, # Soft warm camel
-    "communication": {"label": "Communication", "color": "#9E7B66"}, # Soft brown / mocha
-    "admin":         {"label": "Admin",         "color": "#8C8275"}, # Warm taupe
-    "drift":         {"label": "Drift",         "color": "#A05A4E"}, # Muted terracotta rust
+    "deep_work":     {"label": "Deep work",     "color": "var(--blue)"},
+    "learning":      {"label": "Learning",      "color": "var(--purple)"},
+    "communication": {"label": "Communication", "color": "var(--green)"},
+    "admin":         {"label": "Admin",         "color": "var(--gray)"},
+    "drift":         {"label": "Drift",         "color": "var(--orange)"},
 }
-UNKNOWN_META = {"label": "Other", "color": "#8C8275"}
+UNKNOWN_META = {"label": "Other", "color": "var(--gray)"}
 
 
 def load_rows(path):
@@ -197,7 +196,16 @@ def build_report(path=LEDGER_PATH):
 
     max_cat_min = max((c["minutes"] for c in categories), default=0)
 
+    from datetime import datetime
+    stamp = next((row.get("date") for row in reversed(rows) if row.get("type") == "goals" and row.get("date")), None)
+    try:
+        day = datetime.strptime(stamp, "%Y-%m-%d") if stamp else datetime.now()
+    except ValueError:
+        day = datetime.now()
+
     return {
+        "report_date": f"{day:%A, %B} {day.day}",
+        "model_name": gemma.get_model(),
         "goals": goals,
         "sessions": sessions,
         "categories": categories,

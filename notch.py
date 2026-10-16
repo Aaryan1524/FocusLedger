@@ -53,10 +53,10 @@ SAMPLE_GOALS = "Ship the onboarding; study calculus integrals; keep Slack under 
 # The window itself is a fixed, transparent stage; only the black shape
 # inside it animates. That is what makes the motion buttery — we never
 # resize the window, we spring the layer.
-FRAME_W, FRAME_H = 760, 520
+FRAME_W, FRAME_H = 840, 360
 
 # Expanded content height per screen (below the menu-bar band).
-VIEW_HEIGHTS = {"setup": 346, "goals": 194, "tracking": 168, "done": 150}
+VIEW_HEIGHTS = {"setup": 262, "goals": 126, "tracking": 112, "done": 112}
 
 # Spring tuned to the "balanced" dynamic-notch feel: response ~0.47s,
 # damping fraction 0.77.
@@ -188,19 +188,29 @@ def check_system_readiness():
     }
 
 
+def _corner(p, c, s, e, ratio=0.68):
+    """Cubic 'continuous' corner from s to e around corner point c (Apple-style squircle)."""
+    c1 = (s[0] + (c[0] - s[0]) * ratio, s[1] + (c[1] - s[1]) * ratio)
+    c2 = (e[0] + (c[0] - e[0]) * ratio, e[1] + (c[1] - e[1]) * ratio)
+    Quartz.CGPathAddCurveToPoint(p, None, c1[0], c1[1], c2[0], c2[1], e[0], e[1])
+
+
 def notch_path(x0, x1, ytop, ybot, tr, br):
-    """The notch silhouette (bottom-left coords): top corners flare outward
-    (concave, so the shape melts into the menu bar), bottom corners are
-    convex with a deep radius."""
+    """Notch silhouette (bottom-left coords). Top corners flare outward in a long,
+    shallow concave sweep so the black melts into the menu bar; bottom corners use
+    continuous (squircle) curves instead of circular arcs."""
     p = Quartz.CGPathCreateMutable()
+    d = br * 1.3
+    xl, xr = x0 + tr, x1 - tr
     Quartz.CGPathMoveToPoint(p, None, x0, ytop)
-    Quartz.CGPathAddQuadCurveToPoint(p, None, x0 + tr, ytop, x0 + tr, ytop - tr)
-    Quartz.CGPathAddLineToPoint(p, None, x0 + tr, ybot + br)
-    Quartz.CGPathAddQuadCurveToPoint(p, None, x0 + tr, ybot, x0 + tr + br, ybot)
-    Quartz.CGPathAddLineToPoint(p, None, x1 - tr - br, ybot)
-    Quartz.CGPathAddQuadCurveToPoint(p, None, x1 - tr, ybot, x1 - tr, ybot + br)
-    Quartz.CGPathAddLineToPoint(p, None, x1 - tr, ytop - tr)
-    Quartz.CGPathAddQuadCurveToPoint(p, None, x1 - tr, ytop, x1, ytop)
+    # concave top-left flare: tangent to the menu bar, then down the side
+    Quartz.CGPathAddCurveToPoint(p, None, x0 + tr * 0.75, ytop, xl, ytop - tr * 0.25, xl, ytop - tr)
+    Quartz.CGPathAddLineToPoint(p, None, xl, ybot + d)
+    _corner(p, (xl, ybot), (xl, ybot + d), (xl + d, ybot))
+    Quartz.CGPathAddLineToPoint(p, None, xr - d, ybot)
+    _corner(p, (xr, ybot), (xr - d, ybot), (xr, ybot + d))
+    Quartz.CGPathAddLineToPoint(p, None, xr, ytop - tr)
+    Quartz.CGPathAddCurveToPoint(p, None, xr, ytop - tr * 0.25, x1 - tr * 0.75, ytop, x1, ytop)
     Quartz.CGPathCloseSubpath(p)
     return p
 
@@ -355,9 +365,18 @@ class App(AppKit.NSObject):
             self.tracker = _PreviewTracker()
             self.status = {"session": "Tracking today", "line": "Watching Cursor"}
         self.setExpanded_(True)
+        if os.environ.get("FL_SNAPSHOT"):
+            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                2.5, self, "snapshot:", None, False)
         if os.environ.get("FL_PREVIEW_MENU"):
             AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
                 2.0, self, "previewMenu:", None, False)
+
+    def snapshot_(self, timer):
+        """Capture only this panel's window (never the rest of the screen), then quit."""
+        subprocess.run(["screencapture", "-x", "-o", f"-l{self.panel.windowNumber()}",
+                        os.environ["FL_SNAPSHOT"]], check=False)
+        AppKit.NSApp.terminate_(None)
 
     def previewMenu_(self, timer):
         self.showMenu_(self.menuBtn)
@@ -378,7 +397,7 @@ class App(AppKit.NSObject):
     def shape_rect(self, expanded):
         """Shape bounds in window coords (bottom-left origin, top edge = FRAME_H)."""
         if expanded:
-            w = 400
+            w = 600
             h = self.mb + VIEW_HEIGHTS[self.view_name()]
         else:
             w, h = self.notch_w + 150, self.mb + 12
@@ -399,7 +418,7 @@ class App(AppKit.NSObject):
     @objc.python_method
     def apply_state(self, animate=True):
         r = self.shape_rect(self.expanded)
-        tr, br = (12.0, 26.0) if self.expanded else (9.0, 12.0)
+        tr, br = (14.0, 28.0) if self.expanded else (8.0, 11.0)
         new_path = notch_path(r.origin.x, r.origin.x + r.size.width,
                               FRAME_H, r.origin.y, tr, br)
         old_path = self.shape.path()
@@ -466,36 +485,42 @@ class App(AppKit.NSObject):
         return v
 
     @objc.python_method
-    def _row(self, symbol, title, detail, ok, button, y, W, pad):
-        """Setup row: icon tile, title + detail, then a check or one action button."""
-        tile = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(pad, y + 5, 32, 32))
+    def _card(self, symbol, title, detail, ok, button, x, ytop, cw, ch=84):
+        """Setup card: icon tile, status (check or one action), title, detail."""
+        yb = ytop - ch
+        bg = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(x, yb, cw, ch))
+        bg.setWantsLayer_(True)
+        bg.layer().setBackgroundColor_(_white(0.07).CGColor())
+        bg.layer().setCornerRadius_(16.0)
+        self.content.addSubview_(bg)
+        tile = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(x + 12, ytop - 40, 28, 28))
         tile.setWantsLayer_(True)
         tile.layer().setBackgroundColor_(FILL.CGColor())
         tile.layer().setCornerRadius_(8.0)
         self.content.addSubview_(tile)
-        img = _symbol(symbol, 15)
+        img = _symbol(symbol, 14)
         if img is not None:
             iv = AppKit.NSImageView.imageViewWithImage_(img)
-            iv.setFrame_(AppKit.NSMakeRect(pad + 6, y + 11, 20, 20))
+            iv.setFrame_(AppKit.NSMakeRect(x + 17, ytop - 35, 18, 18))
             iv.setContentTintColor_(INK)
             self.content.addSubview_(iv)
-        self.content.addSubview_(_label(title, AppKit.NSMakeRect(pad + 44, y + 21, 210, 16),
-                                        _font(13, "medium"), INK))
-        det = _label(detail, AppKit.NSMakeRect(pad + 44, y + 5, 220, 15), _font(11.5), MUTED)
-        det.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
-        self.content.addSubview_(det)
         if ok:
-            chk = _symbol("checkmark.circle.fill", 19)
+            chk = _symbol("checkmark.circle.fill", 18)
             if chk is not None:
                 cv = AppKit.NSImageView.imageViewWithImage_(chk)
-                cv.setFrame_(AppKit.NSMakeRect(W - pad - 20, y + 11, 20, 20))
+                cv.setFrame_(AppKit.NSMakeRect(x + cw - 12 - 18, ytop - 12 - 20, 18, 20))
                 cv.setContentTintColor_(GREEN)
                 self.content.addSubview_(cv)
         elif button is not None:
             label, action = button
-            bw = 22 + 7 * len(label)
+            bw = 22 + 6.5 * len(label)
             self.content.addSubview_(self._pill(label, action,
-                                                AppKit.NSMakeRect(W - pad - bw, y + 9, bw, 26), "secondary", size=12))
+                                                AppKit.NSMakeRect(x + cw - 10 - bw, ytop - 38, bw, 24), "secondary", size=12))
+        self.content.addSubview_(_label(title, AppKit.NSMakeRect(x + 12, yb + 28, cw - 24, 16),
+                                        _font(13, "medium"), INK))
+        det = _label(detail, AppKit.NSMakeRect(x + 12, yb + 11, cw - 24, 15), _font(11.5), MUTED)
+        det.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
+        self.content.addSubview_(det)
         return det
 
     def rebuild(self):
@@ -507,60 +532,65 @@ class App(AppKit.NSObject):
         H = self.content.frame().size.height
         W = self.content.frame().size.width
         top = H - self.mb - 10     # stay clear of the physical notch band
-        pad = 22
+        pad = 24
         view = self.view_name()
-
-        # Header: quiet wordmark on the left, overflow menu on the right.
-        self.content.addSubview_(_label("FocusLedger", AppKit.NSMakeRect(pad, top - 17, 100, 16),
-                                        _font(12, "semibold"), FAINT))
-        if self.quick_mode:
-            self.content.addSubview_(_label("TEST MODE", AppKit.NSMakeRect(pad + 84, top - 16, 80, 14),
-                                            _font(10, "semibold"), ORANGE))
-        self.menuBtn = self._icon_button("ellipsis", "showMenu:",
-                                         AppKit.NSMakeRect(W - pad - 28, top - 22, 28, 24))
-        self.content.addSubview_(self.menuBtn)
-
-        title_f = _font(20, "semibold")
+        inner = W - 2 * pad
+        title_f = _font(18, "semibold")
         sub_f = _font(12.5)
+
+        def heading(title, sub, x=pad):
+            self.content.addSubview_(_label(title, AppKit.NSMakeRect(x, top - 26, inner, 23), title_f, INK))
+            self.content.addSubview_(_label(sub, AppKit.NSMakeRect(pad, top - 45, inner - 40, 16), sub_f, MUTED))
+
+        # Overflow menu top-right; test-mode badge sits just left of it.
+        self.menuBtn = self._icon_button("ellipsis", "showMenu:",
+                                         AppKit.NSMakeRect(W - pad - 28, top - 26, 28, 24))
+        self.content.addSubview_(self.menuBtn)
+        if self.quick_mode:
+            tag = _label("TEST MODE", AppKit.NSMakeRect(W - pad - 28 - 88, top - 22, 82, 14),
+                         _font(10, "semibold"), ORANGE)
+            tag.setAlignment_(AppKit.NSTextAlignmentRight)
+            self.content.addSubview_(tag)
 
         if view == "setup":
             r = self.readiness
-            self.content.addSubview_(_label("Set up FocusLedger", AppKit.NSMakeRect(pad, top - 50, W - 2 * pad, 25),
-                                            title_f, INK))
-            self.content.addSubview_(_label("Everything runs on this Mac. Nothing is uploaded.",
-                                            AppKit.NSMakeRect(pad, top - 70, W - 2 * pad, 16), sub_f, MUTED))
+            heading("Set up FocusLedger", "Everything runs on this Mac. Nothing is uploaded.")
 
             model = r["ai_model"]
             label, size = gemma.model_label(model)
             if r["ai_ok"]:
                 ai_detail, ai_btn = f"{label} · {model}", None
             elif self.pull_pct is not None:
-                ai_detail, ai_btn = f"Downloading {label}… {int(self.pull_pct * 100)}%", None
+                ai_detail, ai_btn = f"Downloading… {int(self.pull_pct * 100)}%", None
             elif not r["ai_installed"]:
                 ai_detail, ai_btn = "Ollama isn't installed", ("Get Ollama", "installOllama:")
             elif not r["ai_server_ok"]:
                 ai_detail, ai_btn = "Ollama isn't running", ("Start", "fixOllama:")
             else:
-                ai_detail, ai_btn = f"{label} model · {size} download", ("Download", "pullModel:")
+                ai_detail, ai_btn = f"{label} · {size}", ("Download", "pullModel:")
             if self.pull_error and not r["ai_ok"]:
                 ai_detail = self.pull_error
-            y0 = top - 124
-            self.pull_label = self._row("cpu", "On-device AI", ai_detail, r["ai_ok"], ai_btn, y0, W, pad)
-            self._row("display", "Screen reading",
-                      "Allowed" if r["screen_ok"] else "Needs Screen Recording access",
-                      r["screen_ok"], ("Allow", "openScreenPrefs:"), y0 - 46, W, pad)
-            self._row("mic.fill", "Voice goals",
-                      "On-device speech ready" if r["voice_ok"] else "Helper isn't built yet",
-                      r["voice_ok"], ("Build", "buildVoice:"), y0 - 92, W, pad)
 
-            # Model size: segmented control with the chosen model's cost spelled out.
+            gap = 10
+            cw = (inner - 2 * gap) / 3.0
+            ct = top - 62
+            self.pull_label = self._card("cpu", "On-device AI", ai_detail, r["ai_ok"], ai_btn, pad, ct, cw)
+            self._card("display", "Screen reading",
+                       "Allowed" if r["screen_ok"] else "Needs access",
+                       r["screen_ok"], ("Allow", "openScreenPrefs:"), pad + cw + gap, ct, cw)
+            self._card("mic.fill", "Voice goals",
+                       "On-device speech" if r["voice_ok"] else "Not built yet",
+                       r["voice_ok"], ("Build", "buildVoice:"), pad + 2 * (cw + gap), ct, cw)
+
+            # Model size: segmented control, with the chosen model's cost beside it.
             names = gemma.installed_models(0.5) or []
+            my = ct - 84 - 14 - 24
             seg = AppKit.NSSegmentedControl.segmentedControlWithLabels_trackingMode_target_action_(
                 [lbl for _, lbl, _, _ in gemma.MODEL_CATALOG],
                 AppKit.NSSegmentSwitchTrackingSelectOne, self, "pickModel:")
-            seg.setFrame_(AppKit.NSMakeRect(pad, y0 - 130, W - 2 * pad, 24))
-            for i, (tag, _, _, _) in enumerate(gemma.MODEL_CATALOG):
-                if tag == model:
+            seg.setFrame_(AppKit.NSMakeRect(pad, my, 280, 24))
+            for i, (tag_, _, _, _) in enumerate(gemma.MODEL_CATALOG):
+                if tag_ == model:
                     seg.setSelectedSegment_(i)
             self.content.addSubview_(seg)
             notes = [f"{size} download" if model not in names else "Installed"]
@@ -570,30 +600,28 @@ class App(AppKit.NSObject):
                 notes.append("Recommended for this Mac")
             elif gemma.ram_gb() < dict((m, n) for m, _, _, n in gemma.MODEL_CATALOG).get(model, 0):
                 notes.append("May run slowly on this Mac")
-            self.content.addSubview_(_label(f"{label}  ·  " + "  ·  ".join(notes),
-                                            AppKit.NSMakeRect(pad, y0 - 150, W - 2 * pad, 14), _font(11), FAINT))
+            self.content.addSubview_(_label("  ·  ".join(notes),
+                                            AppKit.NSMakeRect(pad + 294, my + 5, inner - 294, 14), _font(11), FAINT))
 
             ready = r["all_critical_ok"]
             self.content.addSubview_(self._pill("Re-check", "recheckOnboarding:",
-                                                AppKit.NSMakeRect(pad, 16, 104, 32), "secondary", symbol="arrow.clockwise"))
+                                                AppKit.NSMakeRect(pad, 16, 112, 32), "secondary", symbol="arrow.clockwise"))
             cont = self._pill("Continue", "finishOnboarding:",
                               AppKit.NSMakeRect(W - pad - 112, 16, 112, 32), "primary")
-            cont.setEnabled_(ready)
-            cont.setAlphaValue_(1.0 if ready else 0.35)
+            cont.setAlphaValue_(1.0 if ready else 0.4)   # finishOnboarding_ ignores clicks until ready
             self.content.addSubview_(cont)
 
         elif view == "goals":
-            self.content.addSubview_(_label("Today's goals", AppKit.NSMakeRect(pad, top - 50, W - 2 * pad, 25),
-                                            title_f, INK))
-            self.content.addSubview_(_label("Say them or type them. Specific beats noble.",
-                                            AppKit.NSMakeRect(pad, top - 70, W - 2 * pad, 16), sub_f, MUTED))
-            box = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(pad, top - 112, W - 2 * pad, 36))
+            heading("Today's goals", "Say them or type them. Specific beats noble.")
+            row_y = top - 98
+            fw = inner - 104 - 112 - 16
+            box = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(pad, row_y, fw, 36))
             box.setWantsLayer_(True)
             box.layer().setBackgroundColor_(FILL.CGColor())
-            box.layer().setCornerRadius_(10.0)
+            box.layer().setCornerRadius_(18.0)
             self.content.addSubview_(box)
             self.field = AppKit.NSTextField.alloc().initWithFrame_(
-                AppKit.NSMakeRect(pad + 12, top - 112 + 9, W - 2 * pad - 24, 18))
+                AppKit.NSMakeRect(pad + 16, row_y + 9, fw - 32, 18))
             self.field.setFont_(_font(13))
             self.field.setTextColor_(INK)
             self.field.setBezeled_(False)
@@ -604,29 +632,29 @@ class App(AppKit.NSObject):
             self.content.addSubview_(self.field)
 
             title, sym = self._mic_label()
-            self.micBtn = self._pill(title, "speakGoals:", AppKit.NSMakeRect(pad, 16, 112, 32),
+            self.micBtn = self._pill(title, "speakGoals:", AppKit.NSMakeRect(pad + fw + 8, row_y, 104, 36),
                                      "secondary", symbol=sym)
             self.content.addSubview_(self.micBtn)
             self.content.addSubview_(self._pill("Start day", "startDay:",
-                                                AppKit.NSMakeRect(W - pad - 112, 16, 112, 32), "primary"))
+                                                AppKit.NSMakeRect(W - pad - 112, row_y, 112, 36), "primary"))
             self.panel.makeKeyAndOrderFront_(None)
             AppKit.NSApp.activateIgnoringOtherApps_(True)
             self.panel.makeFirstResponder_(self.field)
 
         elif view == "tracking":
-            self.content.addSubview_(self._dot(GREEN, AppKit.NSMakeRect(pad, top - 41, 8, 8)))
+            self.content.addSubview_(self._dot(GREEN, AppKit.NSMakeRect(pad, top - 19, 8, 8)))
             self.sessLabel = _label(self.status["session"],
-                                    AppKit.NSMakeRect(pad + 16, top - 50, W - 2 * pad - 16, 25), title_f, INK)
+                                    AppKit.NSMakeRect(pad + 16, top - 26, inner - 120, 23), title_f, INK)
             self.lineLabel = _label(self.status["line"],
-                                    AppKit.NSMakeRect(pad, top - 70, W - 2 * pad, 16), sub_f, MUTED)
+                                    AppKit.NSMakeRect(pad, top - 45, inner - 40, 16), sub_f, MUTED)
             self.lineLabel.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
             self.content.addSubview_(self.sessLabel)
             self.content.addSubview_(self.lineLabel)
-            goals = _label(self.goals or "", AppKit.NSMakeRect(pad, top - 92, W - 2 * pad, 15), _font(11.5), FAINT)
+            goals = _label(self.goals or "", AppKit.NSMakeRect(pad, 24, inner - 262, 15), _font(11.5), FAINT)
             goals.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
             self.content.addSubview_(goals)
             self.content.addSubview_(self._pill("View report", "viewReport:",
-                                                AppKit.NSMakeRect(pad, 16, 124, 32), "secondary", symbol="doc.text"))
+                                                AppKit.NSMakeRect(W - pad - 244, 16, 124, 32), "secondary", symbol="doc.text"))
             self.content.addSubview_(self._pill("End day", "endDay:",
                                                 AppKit.NSMakeRect(W - pad - 112, 16, 112, 32), "primary"))
 
@@ -634,10 +662,9 @@ class App(AppKit.NSObject):
             headline = "Day complete" if self.day_done else "Not tracking"
             sub = ("Your report is open in the browser." if self.day_done
                    else "Start a new day whenever you're ready.")
-            self.content.addSubview_(_label(headline, AppKit.NSMakeRect(pad, top - 50, W - 2 * pad, 25), title_f, INK))
-            self.content.addSubview_(_label(sub, AppKit.NSMakeRect(pad, top - 70, W - 2 * pad, 16), sub_f, MUTED))
+            heading(headline, sub)
             self.content.addSubview_(self._pill("View report", "viewReport:",
-                                                AppKit.NSMakeRect(pad, 16, 124, 32), "secondary", symbol="doc.text"))
+                                                AppKit.NSMakeRect(W - pad - 244, 16, 124, 32), "secondary", symbol="doc.text"))
             self.content.addSubview_(self._pill("New day", "resetDay:",
                                                 AppKit.NSMakeRect(W - pad - 112, 16, 112, 32), "primary"))
 
@@ -736,6 +763,8 @@ class App(AppKit.NSObject):
         self.rebuild()
 
     def finishOnboarding_(self, sender):
+        if not self.readiness["all_critical_ok"]:
+            return
         try:
             with open(ONBOARDING_FLAG, "w") as f:
                 f.write(date.today().isoformat() + "\n")

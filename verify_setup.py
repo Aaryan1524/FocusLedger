@@ -1,10 +1,10 @@
-"""Preflight: check every link in the FocusLedger chain before a demo.
+"""Preflight: check every link in the FocusLedger chain before a demo or release.
 
 Runs read-only against a temp ledger — your real ledger.jsonl is never
 touched. Anything it can't check without you (mic, live tracking) is listed
 at the end as a manual step.
 
-    venv/bin/python verify_setup.py
+    ./venv/bin/python verify_setup.py
 """
 import json
 import os
@@ -44,13 +44,10 @@ def c_deps():
 
 # -------------------------------------------------------------- ollama ----
 def c_ollama():
-    import requests
     import gemma
-    r = requests.get("http://localhost:11434/api/tags", timeout=5)
-    names = [m["name"] for m in r.json()["models"]]
-    ok = gemma.MODEL in names
-    return ok, (f"{gemma.MODEL} available" if ok
-                else f"{gemma.MODEL} NOT found. have: {names}. run: ollama pull {gemma.MODEL}")
+    st = gemma.check_ollama(timeout=5.0)
+    ok = st["server_ok"] and st["model_ok"]
+    return ok, st["detail"]
 
 
 # ------------------------------------------------------- screen capture ----
@@ -95,6 +92,24 @@ def c_dictate_built():
     signed = subprocess.run(["codesign", "-v", app],
                             capture_output=True).returncode == 0
     return True, f"built, usage descriptions present, signed={signed}"
+
+
+# ------------------------------------------------------ focusledger.app ----
+def c_app_bundle():
+    app = os.path.join(BASE, "FocusLedger.app")
+    exe = os.path.join(app, "Contents", "MacOS", "FocusLedger")
+    if not os.path.exists(exe):
+        return False, "FocusLedger.app missing — run ./build_app.sh"
+    with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
+        pl = plistlib.load(f)
+    need = ["NSScreenCaptureUsageDescription", "NSMicrophoneUsageDescription",
+            "NSSpeechRecognitionUsageDescription"]
+    missing = [k for k in need if k not in pl]
+    if missing:
+        return False, f"FocusLedger.app Info.plist missing {missing}"
+    signed = subprocess.run(["codesign", "-v", app],
+                            capture_output=True).returncode == 0
+    return signed, f"FocusLedger.app built, privacy keys present, signed={signed}"
 
 
 # ----------------------------------------------------- gemma / schema ----
@@ -143,7 +158,7 @@ def c_injection():
 
 # --------------------------------------------------------------- ledger ----
 def c_ledger_roundtrip():
-    """goals written by the notch must be readable by the tracker."""
+    """goals written by the notch must be readable by the tracker + resettable."""
     import focusledger as fl
     from datetime import date
     d = tempfile.mkdtemp()
@@ -154,22 +169,20 @@ def c_ledger_roundtrip():
         fl.append_ledger({"type": "goals", "date": date.today().isoformat(),
                           "goals": spoken})
         got = fl.load_todays_goals()
-        return got == spoken, f"wrote and read back {got!r}"
+        fl.reset_todays_ledger()
+        after_reset = fl.load_todays_goals()
+        ok = (got == spoken) and (after_reset is None)
+        return ok, f"wrote/read {got!r}, reset clean={after_reset is None}"
     finally:
         fl.LEDGER_PATH = old
         shutil.rmtree(d, ignore_errors=True)
 
 
 def c_cwd():
-    """LEDGER_PATH is relative: the notch and the tracker must share a cwd."""
+    """LEDGER_PATH is anchored to BASE so launching from any cwd is safe."""
     import focusledger as fl
-    ok = not os.path.isabs(fl.LEDGER_PATH)
-    here = os.getcwd()
-    same = os.path.realpath(here) == os.path.realpath(BASE)
-    if ok and not same:
-        return None, (f"cwd is {here}, project is {BASE}. Relative ledger path "
-                      "means you must launch from the project dir.")
-    return True, f"cwd == project dir ({BASE})"
+    ok = os.path.isabs(fl.LEDGER_PATH)
+    return ok, f"LEDGER_PATH anchored to {fl.LEDGER_PATH}"
 
 
 # --------------------------------------------------------------- report ----
@@ -188,6 +201,31 @@ def c_report():
     return size > 2000, f"{size} bytes, focus_score={data['focus_score']}, headline={head[:60]!r}"
 
 
+def c_subminute_report():
+    """A 20-second Quick Test (0.5m checkpoint) must render non-zero minutes & category bars."""
+    import report
+    d = tempfile.mkdtemp()
+    tiny_ledger = os.path.join(d, "tiny.jsonl")
+    rows = [
+        {"type": "goals", "date": "2026-10-16", "goals": "Ship FocusLedger onboarding"},
+        {"type": "session_open", "t": "12:00:00"},
+        {"type": "checkpoint", "t": "12:00:25", "samples": 2, "minutes": 0.5, "verdict": {
+            "activity": "Testing FocusLedger quick mode", "category": "deep_work",
+            "goal": "Ship FocusLedger onboarding", "aligned": True, "confidence": "high",
+            "note": "Running quick test verification."
+        }},
+    ]
+    with open(tiny_ledger, "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    try:
+        data = report.build_report(tiny_ledger)
+        ok = data["total_min"] >= 1 and len(data["categories"]) == 1 and data["categories"][0]["minutes"] >= 1
+        return ok, f"0.5m checkpoint -> displayed total_min={data['total_min']}m, categories={len(data['categories'])}"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ------------------------------------------------------------- leftovers ----
 def c_no_images():
     d = os.path.join(BASE, "captures")
@@ -199,9 +237,10 @@ def c_no_images():
 
 if __name__ == "__main__":
     print("\nFocusLedger preflight\n" + "=" * 60)
-    print("\n-- environment --")
+    print("\n-- environment & bundles --")
     check("python deps", c_deps)
     check("ollama + model", c_ollama)
+    check("FocusLedger.app bundle + signing", c_app_bundle)
     print("\n-- capture pipeline --")
     check("screen recording permission", c_screen)
     check("apple vision OCR", c_ocr)
@@ -213,20 +252,20 @@ if __name__ == "__main__":
     check("checkpoint returns a valid verdict", c_checkpoint)
     check("resists prompt injection from screen text", c_injection)
     print("\n-- ledger + report --")
-    check("goals round-trip (notch -> tracker)", c_ledger_roundtrip)
-    check("working directory", c_cwd)
-    check("report renders", c_report)
+    check("goals round-trip + new-day reset", c_ledger_roundtrip)
+    check("ledger path anchored", c_cwd)
+    check("full-day report renders", c_report)
+    check("sub-minute quick-test report renders", c_subminute_report)
 
     hard = [r for r in results if r is False]
     print("\n" + "=" * 60)
     print(f"{len(hard)} failure(s), {len([r for r in results if r is None])} warning(s), "
           f"{len([r for r in results if r is True])} passed")
     print("""
-Not covered here (needs you, and a mic):
-  1. FL_DEV=1 venv/bin/python notch.py
-  2. click the notch -> "Speak goals" -> say two goals -> "Start day"
-  3. work normally for ~2 minutes
-  4. cat ledger.jsonl  -> expect: goals row, session_open, checkpoint with
-     a real activity, then session_close after you end the day
+End-to-End Quick Tryout (< 60s):
+  1. ./start.sh --onboarding
+  2. Verify the 3 green checks in the Notch Wizard -> click "Continue →"
+  3. Click "✨ Sample" (or "🎙 Speak goals"), ensure "⚡ Quick 1m" is highlighted -> click "Start day"
+  4. Work for ~15 seconds, click the notch -> click "View report" (flushes live checkpoint & opens browser)
 """)
     sys.exit(1 if hard else 0)

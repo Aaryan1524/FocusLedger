@@ -1,0 +1,69 @@
+#!/bin/bash
+# Build FocusLedger.app — double-clickable macOS companion bundle.
+#
+# Wraps the notch companion in a signed .app bundle with proper macOS
+# privacy usage descriptions (Screen Capture, Microphone, Speech Recognition)
+# and LSUIElement=true so it lives cleanly in the MacBook notch.
+set -euo pipefail
+cd "$(dirname "$0")"
+PROJECT_DIR="$(pwd)"
+
+APP="FocusLedger.app"
+echo "==> assembling $APP"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/Resources"
+
+cat << 'PLIST' > "$APP/Contents/Info.plist"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>FocusLedger</string>
+  <key>CFBundleDisplayName</key>
+  <string>FocusLedger</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.focusledger.app</string>
+  <key>CFBundleVersion</key>
+  <string>1.0.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>CFBundleExecutable</key>
+  <string>FocusLedger</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>FocusLedger reads the focused window with on-device Apple Vision OCR and deletes every screenshot immediately.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>FocusLedger listens briefly when you click Speak goals to transcribe your daily goals on-device.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>FocusLedger transcribes your spoken goals on-device using Apple Speech. Audio never leaves this Mac.</string>
+</dict>
+</plist>
+PLIST
+
+cat << LAUNCHER > "$APP/Contents/MacOS/FocusLedger"
+#!/bin/bash
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:\$PATH"
+cd "$PROJECT_DIR"
+
+# Start local Ollama daemon in background if installed and not yet listening
+if command -v ollama >/dev/null 2>&1; then
+  if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+    nohup ollama serve >/dev/null 2>&1 &
+    sleep 1
+  fi
+fi
+
+exec "$PROJECT_DIR/venv/bin/python" "$PROJECT_DIR/notch.py" "\$@"
+LAUNCHER
+
+chmod +x "$APP/Contents/MacOS/FocusLedger"
+codesign --force --deep --sign - "$APP"
+echo "==> done: ./$APP"

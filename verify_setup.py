@@ -56,7 +56,7 @@ def c_screen():
     with mss.MSS() as sct:
         img = sct.grab(sct.monitors[1])
     px = img.rgb
-    distinct = len(set(px[i:i + 3] for i in range(0, min(len(px), 300000), 3)))
+    distinct = len(set(px[i:i + 3] for i in range(0, len(px), 3 * 997)))   # whole frame, not just the menu bar
     ok = distinct >= 5
     return ok, (f"{img.size.width}x{img.size.height}, {distinct} distinct colors"
                 if ok else "frame looks blank — grant Screen Recording in "
@@ -65,16 +65,30 @@ def c_screen():
 
 # ------------------------------------------------------------------ ocr ----
 def c_ocr():
-    import mss, mss.tools
+    """Vision OCR on an image we draw ourselves, so the result never depends on
+    what happens to be on screen (an empty desktop has no text to read)."""
+    import AppKit
     import vision_ocr
+    w, h = 900, 160
+    rep = AppKit.NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
+        None, w, h, 8, 4, True, False, AppKit.NSDeviceRGBColorSpace, 0, 0)
+    ctx = AppKit.NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep)
+    AppKit.NSGraphicsContext.saveGraphicsState()
+    AppKit.NSGraphicsContext.setCurrentContext_(ctx)
+    AppKit.NSColor.whiteColor().set()
+    AppKit.NSRectFill(AppKit.NSMakeRect(0, 0, w, h))
+    AppKit.NSAttributedString.alloc().initWithString_attributes_(
+        "FocusLedger reads text on this Mac",
+        {AppKit.NSFontAttributeName: AppKit.NSFont.systemFontOfSize_(44),
+         AppKit.NSForegroundColorAttributeName: AppKit.NSColor.blackColor()}
+    ).drawAtPoint_(AppKit.NSMakePoint(20, 55))
+    AppKit.NSGraphicsContext.restoreGraphicsState()
     d = tempfile.mkdtemp()
-    p = os.path.join(d, "s.png")
-    with mss.MSS() as sct:
-        img = sct.grab(sct.monitors[1])
-    mss.tools.to_png(img.rgb, img.size, output=p)
+    p = os.path.join(d, "ocr.png")
+    rep.representationUsingType_properties_(AppKit.NSBitmapImageFileTypePNG, None).writeToFile_atomically_(p, True)
     text = vision_ocr.ocr(p)
     shutil.rmtree(d, ignore_errors=True)
-    return len(text) > 20, f"{len(text)} chars recognised"
+    return "FocusLedger" in text, f"read back: {text.strip()[:60]!r}"
 
 
 # -------------------------------------------------------------- dictate ----

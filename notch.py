@@ -162,16 +162,17 @@ def check_system_readiness():
     ai = gemma.check_ollama(timeout=1.2)
     ai_ok = ai["server_ok"] and ai["model_ok"]
 
+    # Trust macOS's own answer when it gives one. The pixel check is a fallback for
+    # older systems, and samples the whole frame: the top rows alone are the flat
+    # menu bar, which reads as "blank" even when permission is granted.
     screen_ok = False
     try:
-        preflight_ok = True
         if hasattr(Quartz, "CGPreflightScreenCaptureAccess"):
-            preflight_ok = bool(Quartz.CGPreflightScreenCaptureAccess())
-        with mss.MSS() as sct:
-            img = sct.grab(sct.monitors[1])
-        px = img.rgb
-        distinct = len(set(px[i:i + 3] for i in range(0, min(len(px), 150000), 3)))
-        screen_ok = preflight_ok and distinct >= 5
+            screen_ok = bool(Quartz.CGPreflightScreenCaptureAccess())
+        else:
+            with mss.MSS() as sct:
+                px = sct.grab(sct.monitors[1]).rgb
+            screen_ok = len(set(px[i:i + 3] for i in range(0, len(px), 3 * 997))) >= 5
     except Exception:
         screen_ok = False
 

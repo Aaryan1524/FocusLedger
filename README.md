@@ -60,7 +60,7 @@ your goals  →  idle gate  →  OCR (image deleted)  →  Gemma verdict  →  r
 
 <div align="center">
   <img src="docs/images/notch-setup.png" width="640" alt="The notch setup screen: on-device AI, screen reading and voice goals, with a Light, Balanced, Best model picker">
-  <br><sub>First launch. Screen reading shows "Allow, then reopen app" until you grant Screen Recording.</sub>
+  <br><sub>First launch with everything ready. Until Screen Recording is granted, the middle card reads "Allow, then reopen app".</sub>
 </div>
 
 ---

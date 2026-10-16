@@ -576,7 +576,7 @@ class App(AppKit.NSObject):
             ct = top - 62
             self.pull_label = self._card("cpu", "On-device AI", ai_detail, r["ai_ok"], ai_btn, pad, ct, cw)
             self._card("display", "Screen reading",
-                       "Allowed" if r["screen_ok"] else "Needs access",
+                       "Allowed" if r["screen_ok"] else "Allow, then reopen app",
                        r["screen_ok"], ("Allow", "openScreenPrefs:"), pad + cw + gap, ct, cw)
             self._card("mic.fill", "Voice goals",
                        "On-device speech" if r["voice_ok"] else "Not built yet",

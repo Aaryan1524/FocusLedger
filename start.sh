@@ -35,16 +35,18 @@ fi
 # 2. Build on-device voice helper (Dictate.app) if missing
 if [ ! -x "Dictate.app/Contents/MacOS/dictate" ]; then
   echo -e "${CYAN}==> Building on-device Speech helper (Dictate.app)...${RESET}"
-  ./build_dictate.sh
+  ./build_dictate.sh || echo -e "${YELLOW}⚠ Voice goals unavailable (needs Xcode Command Line Tools: xcode-select --install). Typing goals still works.${RESET}"
 fi
 
 # 3. Build macOS app bundle (FocusLedger.app) if missing
 if [ ! -x "FocusLedger.app/Contents/MacOS/FocusLedger" ]; then
   echo -e "${CYAN}==> Building macOS application bundle (FocusLedger.app)...${RESET}"
-  ./build_app.sh
+  ./build_app.sh || echo -e "${YELLOW}⚠ Couldn't build FocusLedger.app; ./start.sh still launches the notch.${RESET}"
 fi
 
-# 4. Ensure Ollama is running & check Gemma model
+# 4. Make sure the local Ollama server is running. The model itself is downloaded
+#    from inside the app (with a progress bar), so there is no 8 GB wait here.
+export PATH="/Applications/Ollama.app/Contents/Resources:$PATH"
 MODEL="$(./venv/bin/python -c 'import gemma; print(gemma.get_model())')"   # env > saved choice > RAM-based default
 if command -v ollama >/dev/null 2>&1; then
   if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
@@ -53,11 +55,10 @@ if command -v ollama >/dev/null 2>&1; then
     sleep 2
   fi
   if ! ollama list 2>/dev/null | awk '{print $1}' | grep -qx "$MODEL"; then
-    echo -e "${YELLOW}==> Pulling on-device model $MODEL via Ollama...${RESET}"
-    ollama pull "$MODEL"
+    echo -e "${YELLOW}==> $MODEL isn't downloaded yet. The setup screen will offer a one-click download.${RESET}"
   fi
 else
-  echo -e "${YELLOW}⚠ Ollama CLI not found in PATH. Install from https://ollama.com if needed.${RESET}"
+  echo -e "${YELLOW}⚠ Ollama isn't installed. The setup screen will link to https://ollama.com/download${RESET}"
 fi
 
 # 5. Handle CLI flags

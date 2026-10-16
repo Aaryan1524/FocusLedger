@@ -97,7 +97,12 @@ def check_ollama(timeout=1.5):
 
 
 def pull_model(tag, on_progress=None):
-    """Download a model through Ollama, reporting fraction complete (0..1)."""
+    """Download a model through Ollama, reporting overall fraction complete (0..1).
+
+    Ollama reports each layer on its own, so progress is summed across layers
+    and never allowed to move backwards when a new layer starts.
+    """
+    layers, best = {}, 0.0
     with requests.post(OLLAMA_PULL_URL, json={"model": tag, "stream": True},
                        stream=True, timeout=(5, None)) as r:
         r.raise_for_status()
@@ -107,8 +112,14 @@ def pull_model(tag, on_progress=None):
             d = json.loads(line)
             if d.get("error"):
                 raise RuntimeError(d["error"])
-            if on_progress and d.get("total"):
-                on_progress(d.get("completed", 0) / d["total"])
+            if d.get("digest") and d.get("total"):
+                layers[d["digest"]] = (d.get("completed", 0), d["total"])
+                total = sum(t for _, t in layers.values())
+                best = max(best, sum(c for c, _ in layers.values()) / total)
+                if on_progress:
+                    on_progress(min(best, 0.99))
+    if on_progress:
+        on_progress(1.0)
 
 
 def gemma(prompt, system="", fmt=None):

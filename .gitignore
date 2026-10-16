@@ -21,3 +21,6 @@ __pycache__/
 dictate
 Dictate.app/
 FocusLedger.app/
+
+# README images
+!docs/images/*.png

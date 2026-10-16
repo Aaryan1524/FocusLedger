@@ -289,7 +289,7 @@ def main():
             else:
                 if idle >= IDLE_CLOSE:
                     # Work ended ~idle seconds ago; don't count the idle gap as activity.
-                    last_active = now - timedelta(seconds=idle)
+                    last_active = max(now - timedelta(seconds=idle), session["start"])
                     run_checkpoint(goals, since=last_checkpoint, until=last_active,
                                    reason="session close")  # flush before closing
                     dur = _duration(session["start"], last_active)

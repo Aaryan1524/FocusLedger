@@ -45,7 +45,7 @@ if [ ! -x "FocusLedger.app/Contents/MacOS/FocusLedger" ]; then
 fi
 
 # 4. Ensure Ollama is running & check Gemma model
-MODEL="${FL_MODEL:-gemma3:12b}"
+MODEL="$(./venv/bin/python -c 'import gemma; print(gemma.get_model())')"   # env > saved choice > RAM-based default
 if command -v ollama >/dev/null 2>&1; then
   if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
     echo -e "${CYAN}==> Starting local Ollama server...${RESET}"

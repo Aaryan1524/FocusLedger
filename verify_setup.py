@@ -264,8 +264,8 @@ if __name__ == "__main__":
     print("""
 End-to-End Quick Tryout (< 60s):
   1. ./start.sh --onboarding
-  2. Verify the 3 green checks in the Notch Wizard -> click "Continue →"
-  3. Click "✨ Sample" (or "🎙 Speak goals"), ensure "⚡ Quick 1m" is highlighted -> click "Start day"
-  4. Work for ~15 seconds, click the notch -> click "View report" (flushes live checkpoint & opens browser)
+  2. Verify the green checks in the setup screen -> click "Continue"
+  3. Open the ··· menu -> "Fill sample goals" and turn on Test mode -> click "Start day"
+  4. Work for ~15 seconds, click the notch -> "View report" (flushes live checkpoint & opens browser)
 """)
     sys.exit(1 if hard else 0)

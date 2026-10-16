@@ -13,52 +13,102 @@ import requests
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
-MODEL = os.environ.get("FL_MODEL", "gemma3:12b")
+OLLAMA_PULL_URL = "http://localhost:11434/api/pull"
 TEMPERATURE = 0.2
 
+CONFIG_DIR = os.path.expanduser("~/Library/Application Support/FocusLedger")
+CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
-def check_ollama(timeout=1.5):
-    """Inspect local Ollama daemon and verify the configured Gemma model is available.
+# Every Gemma size FocusLedger offers: (ollama tag, label, download, min RAM in GB).
+# The tracker, report and seed run as separate processes, so the choice lives in
+# CONFIG_PATH rather than in memory.
+MODEL_CATALOG = [
+    ("gemma3:1b", "Light", "0.8 GB", 0),
+    ("gemma3:4b", "Balanced", "3.3 GB", 8),
+    ("gemma3:12b", "Best", "8.1 GB", 16),
+]
 
-    Returns a dict:
-      {"server_ok": bool, "model_ok": bool, "model": str, "models": list, "detail": str}
-    """
+
+def ram_gb():
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 2**30
+    except (ValueError, OSError):
+        return 8.0
+
+
+def recommended_model():
+    """Largest catalog model the machine can comfortably run."""
+    fit = [m for m, _, _, need in MODEL_CATALOG if ram_gb() >= need]
+    return fit[-1] if fit else MODEL_CATALOG[0][0]
+
+
+def _read_config():
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def get_model():
+    """FL_MODEL env > saved choice > RAM-based recommendation."""
+    return os.environ.get("FL_MODEL") or _read_config().get("model") or recommended_model()
+
+
+def set_model(tag):
+    cfg = _read_config()
+    cfg["model"] = tag
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f)
+
+
+def model_label(tag):
+    for m, label, size, _ in MODEL_CATALOG:
+        if m == tag:
+            return label, size
+    return tag, ""
+
+
+def installed_models(timeout=1.5):
     try:
         r = requests.get(OLLAMA_TAGS_URL, timeout=timeout)
         r.raise_for_status()
-        names = [m.get("name", "") for m in r.json().get("models", [])]
+        return [m.get("name", "") for m in r.json().get("models", [])]
     except Exception:
-        return {
-            "server_ok": False,
-            "model_ok": False,
-            "model": MODEL,
-            "models": [],
-            "detail": "Ollama offline — click Start Ollama",
-        }
-    if MODEL in names:
-        return {
-            "server_ok": True,
-            "model_ok": True,
-            "model": MODEL,
-            "models": names,
-            "detail": f"{MODEL} ready",
-        }
-    gemma_alts = [n for n in names if n.startswith("gemma")]
-    if gemma_alts:
-        return {
-            "server_ok": True,
-            "model_ok": True,
-            "model": gemma_alts[0],
-            "models": names,
-            "detail": f"{gemma_alts[0]} ready",
-        }
-    return {
-        "server_ok": True,
-        "model_ok": False,
-        "model": MODEL,
-        "models": names,
-        "detail": f"{MODEL} missing — run: ollama pull {MODEL}",
-    }
+        return None
+
+
+def check_ollama(timeout=1.5):
+    """Inspect the local Ollama daemon and whether the chosen model is installed.
+
+    Returns {"server_ok", "model_ok", "model", "models", "detail"}. There is no
+    silent fallback to another tag: the model reported here is the one gemma()
+    will call.
+    """
+    model = get_model()
+    names = installed_models(timeout)
+    if names is None:
+        return {"server_ok": False, "model_ok": False, "model": model, "models": [],
+                "detail": "Ollama isn't running"}
+    ok = model in names
+    return {"server_ok": True, "model_ok": ok, "model": model, "models": names,
+            "detail": f"{model} ready" if ok else f"{model} not downloaded yet"}
+
+
+def pull_model(tag, on_progress=None):
+    """Download a model through Ollama, reporting fraction complete (0..1)."""
+    with requests.post(OLLAMA_PULL_URL, json={"model": tag, "stream": True},
+                       stream=True, timeout=(5, None)) as r:
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if not line:
+                continue
+            d = json.loads(line)
+            if d.get("error"):
+                raise RuntimeError(d["error"])
+            if on_progress and d.get("total"):
+                on_progress(d.get("completed", 0) / d["total"])
 
 
 def gemma(prompt, system="", fmt=None):
@@ -68,7 +118,7 @@ def gemma(prompt, system="", fmt=None):
     force the reply into that shape. See gemma_json() for why that matters.
     """
     payload = {
-        "model": MODEL,
+        "model": get_model(),
         "prompt": prompt,
         "system": system,
         "stream": False,
@@ -83,7 +133,11 @@ def gemma(prompt, system="", fmt=None):
             "Could not reach Ollama at " + OLLAMA_URL +
             ". Is it running? Start it with `ollama serve`."
         ) from e
-    return r.json()["response"]
+    body = r.json()
+    if "response" not in body:
+        raise RuntimeError(body.get("error", "Ollama returned no response") +
+                           f" (model: {payload['model']})")
+    return body["response"]
 
 
 def gemma_json(prompt, system="", schema=None):

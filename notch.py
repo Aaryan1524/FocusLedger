@@ -46,12 +46,17 @@ PYTHON = sys.executable
 DICTATE_APP = os.path.join(BASE, "Dictate.app")   # Swift speech-to-text helper
 DICTATE_EXE = "Dictate.app/Contents/MacOS/dictate"
 ONBOARDING_FLAG = os.path.join(BASE, ".onboarding_done")
-SAMPLE_GOALS = "Ship FocusLedger onboarding; study calculus integrals; keep Slack under 20m"
+MODEL_NOTES = {"gemma3:1b": "Fastest, but less accurate"}
+IDLE_STATUS = {"session": "Tracking today", "line": "Waiting for you to get started"}
+SAMPLE_GOALS = "Ship the onboarding; study calculus integrals; keep Slack under 20 minutes"
 
 # The window itself is a fixed, transparent stage; only the black shape
 # inside it animates. That is what makes the motion buttery — we never
 # resize the window, we spring the layer.
-FRAME_W, FRAME_H = 760, 440
+FRAME_W, FRAME_H = 760, 520
+
+# Expanded content height per screen (below the menu-bar band).
+VIEW_HEIGHTS = {"setup": 346, "goals": 194, "tracking": 168, "done": 150}
 
 # Spring tuned to the "balanced" dynamic-notch feel: response ~0.47s,
 # damping fraction 0.77.
@@ -59,18 +64,21 @@ SPRING_STIFFNESS = (2 * math.pi / 0.47) ** 2   # ≈ 179
 SPRING_DAMPING = 2 * 0.77 * math.sqrt(SPRING_STIFFNESS)  # ≈ 21
 SPRING_DURATION = 0.8
 
-# Luxury Editorial Aesthetic (Te Vártá inspiration on pure pitch black background)
-INK         = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.95, 0.94, 0.91, 1.0)  # Off-white / Cream (#F2EFE7)
-MUTED       = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.64, 0.61, 0.56, 1.0)  # Warm Taupe / Sand (#A39C8F)
-FAINT       = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.95, 0.94, 0.91, 0.40) # Muted Faint
-CREAM_CTA   = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.92, 0.90, 0.86, 1.0)  # Primary Off-White Pill (#ECE6DC)
-CREAM_TEXT  = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.09, 0.08, 1.0)  # Dark Charcoal Text (#1A1714)
-GLASS_BG    = AppKit.NSColor.colorWithCalibratedWhite_alpha_(0.11, 1.0)                       # Translucent Glass Pill
-ACTIVE_BG   = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.22, 0.19, 0.15, 1.0)  # Warm Highlight Pill
-FIELD_BG    = AppKit.NSColor.colorWithCalibratedWhite_alpha_(0.07, 1.0)                       # Soft Frosted Field Fill
-GREEN       = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.85, 0.76, 0.65, 1.0)  # Warm Almond Accent (#D8C3A5)
-OK_COLOR    = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.58, 0.78, 0.62, 1.0)  # Soft Sage Green
-WARN_COLOR  = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.82, 0.48, 0.42, 1.0)  # Terracotta Rust
+# Apple-style palette: white on black at a few opacities, system green/orange.
+def _white(a):
+    return AppKit.NSColor.colorWithCalibratedWhite_alpha_(1.0, a)
+
+INK        = _white(1.0)
+MUTED      = _white(0.60)
+FAINT      = _white(0.38)
+FILL       = _white(0.12)     # secondary button / field fill
+FILL_HOVER = _white(0.20)
+PRIMARY    = _white(1.0)      # primary capsule
+PRIMARY_HOVER = _white(0.86)
+ON_PRIMARY = AppKit.NSColor.blackColor()
+GREEN      = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.19, 0.82, 0.35, 1.0)   # systemGreen (dark)
+ORANGE     = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(1.00, 0.62, 0.04, 1.0)   # systemOrange (dark)
+RED        = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(1.00, 0.27, 0.23, 1.0)
 
 _WEIGHTS = {
     "regular": AppKit.NSFontWeightRegular,
@@ -80,21 +88,25 @@ _WEIGHTS = {
 }
 
 
-def _serif(size, italic=False, weight="regular"):
-    """Editorial serif font (Georgia / New York / Palatino) for luxury minimalist aesthetic."""
-    font_name = "Georgia-Italic" if italic else ("Georgia-Bold" if weight == "bold" else "Georgia")
-    f = AppKit.NSFont.fontWithName_size_(font_name, size)
-    if f is None:
-        f = AppKit.NSFont.systemFontOfSize_weight_(size, _WEIGHTS.get(weight, AppKit.NSFontWeightRegular))
-    return f
-
-
 def _font(size, weight="regular", rounded=False, mono=False):
-    """System font for clean monospaced digits and metadata captions."""
+    """SF Pro; `rounded` gives SF Rounded, `mono` gives tabular digits."""
     w = _WEIGHTS[weight]
     f = (AppKit.NSFont.monospacedDigitSystemFontOfSize_weight_(size, w)
          if mono else AppKit.NSFont.systemFontOfSize_weight_(size, w))
+    if rounded:
+        d = f.fontDescriptor().fontDescriptorWithDesign_(AppKit.NSFontDescriptorSystemDesignRounded)
+        if d is not None:
+            f = AppKit.NSFont.fontWithDescriptor_size_(d, size) or f
     return f
+
+
+def _symbol(name, size=13, weight="medium"):
+    """SF Symbol image, or None when the symbol is unavailable (older macOS)."""
+    img = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
+    if img is None:
+        return None
+    cfg = AppKit.NSImageSymbolConfiguration.configurationWithPointSize_weight_(size, _WEIGHTS[weight])
+    return img.imageWithSymbolConfiguration_(cfg)
 
 
 def _label(text, frame, font, color):
@@ -107,16 +119,50 @@ def _label(text, frame, font, color):
     return lb
 
 
+class PillButton(AppKit.NSButton):
+    """Capsule button with hover and press feedback (borderless buttons give none)."""
+
+    def initWithFrame_(self, frame):
+        self = objc.super(PillButton, self).initWithFrame_(frame)
+        if self is not None:
+            self.base_bg = None
+            self.hover_bg = None
+            self.addTrackingArea_(AppKit.NSTrackingArea.alloc().initWithRect_options_owner_userInfo_(
+                AppKit.NSZeroRect,
+                AppKit.NSTrackingMouseEnteredAndExited | AppKit.NSTrackingActiveAlways
+                | AppKit.NSTrackingInVisibleRect, self, None))
+        return self
+
+    @objc.python_method
+    def _paint(self, color):
+        if color is not None:
+            self.layer().setBackgroundColor_(color.CGColor())
+
+    def mouseEntered_(self, event):
+        self._paint(self.hover_bg)
+
+    def mouseExited_(self, event):
+        self._paint(self.base_bg)
+
+    def mouseDown_(self, event):
+        self.layer().setOpacity_(0.55)
+        objc.super(PillButton, self).mouseDown_(event)   # tracks until mouse-up
+        self.layer().setOpacity_(1.0)
+
+    def acceptsFirstMouse_(self, event):
+        return True
+
+
+def ollama_installed():
+    return bool(shutil.which("ollama")) or os.path.isdir("/Applications/Ollama.app")
+
+
 def check_system_readiness():
-    """Fast non-blocking readiness check for Onboarding Wizard."""
-    # 1. Local AI (Ollama + Gemma)
+    """Fast readiness check for the setup screen."""
     ai = gemma.check_ollama(timeout=1.2)
     ai_ok = ai["server_ok"] and ai["model_ok"]
-    ai_status = ai["detail"]
 
-    # 2. Screen Capture permission
     screen_ok = False
-    screen_status = "Needs Screen Recording permission"
     try:
         preflight_ok = True
         if hasattr(Quartz, "CGPreflightScreenCaptureAccess"):
@@ -125,25 +171,19 @@ def check_system_readiness():
             img = sct.grab(sct.monitors[1])
         px = img.rgb
         distinct = len(set(px[i:i + 3] for i in range(0, min(len(px), 150000), 3)))
-        if preflight_ok and distinct >= 5:
-            screen_ok = True
-            screen_status = f"Granted ({img.size.width}×{img.size.height} Vision OCR)"
+        screen_ok = preflight_ok and distinct >= 5
     except Exception:
         screen_ok = False
 
-    # 3. On-Device Voice helper (Dictate.app)
-    exe = os.path.join(DICTATE_APP, "Contents", "MacOS", "dictate")
-    voice_ok = os.path.exists(exe)
-    voice_status = "On-device Speech.framework ready" if voice_ok else "Helper not compiled yet"
+    voice_ok = os.path.exists(os.path.join(DICTATE_APP, "Contents", "MacOS", "dictate"))
 
     return {
         "ai_ok": ai_ok,
         "ai_server_ok": ai["server_ok"],
-        "ai_status": ai_status,
+        "ai_model": ai["model"],
+        "ai_installed": ollama_installed(),
         "screen_ok": screen_ok,
-        "screen_status": screen_status,
         "voice_ok": voice_ok,
-        "voice_status": voice_status,
         "all_critical_ok": ai_ok and screen_ok,
     }
 
@@ -163,6 +203,14 @@ def notch_path(x0, x1, ytop, ybot, tr, br):
     Quartz.CGPathAddQuadCurveToPoint(p, None, x1 - tr, ytop, x1, ytop)
     Quartz.CGPathCloseSubpath(p)
     return p
+
+
+class _PreviewTracker:
+    def poll(self): return None
+    def send_signal(self, *_): pass
+    def terminate(self): pass
+    def wait(self, *_, **__): pass
+    def kill(self): pass
 
 
 class NotchPanel(AppKit.NSPanel):
@@ -197,11 +245,17 @@ class RootView(AppKit.NSView):
 class App(AppKit.NSObject):
     def applicationDidFinishLaunching_(self, note):
         self.tracker = None
-        self.status = {"line": "idle — waiting for keyboard/mouse activity", "session": "session ready"}
+        self.status = dict(IDLE_STATUS)
         self.expanded = False
         self.day_done = False
         self.quick_mode = bool(os.environ.get("FL_DEV"))
         self.flush_event = threading.Event()
+        self.goals = fl.load_todays_goals()
+        self.preview = os.environ.get("FL_PREVIEW")   # setup | goals | tracking | done (design review)
+        self.pull_pct = None
+        self.pull_error = None
+        self.pull_label = None
+        self.field = None
         self.readiness = check_system_readiness()
 
         force_onboarding = ("--onboarding" in sys.argv) or bool(os.environ.get("FL_ONBOARDING"))
@@ -226,6 +280,7 @@ class App(AppKit.NSObject):
                  | AppKit.NSWindowStyleMaskNonactivatingPanel)  # clicks land without app activation
         self.panel = NotchPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             rect, style, AppKit.NSBackingStoreBuffered, False)
+        self.panel.setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua))
         self.panel.setLevel_(AppKit.NSPopUpMenuWindowLevel)  # reliably above the menu bar
         self.panel.setOpaque_(False)
         self.panel.setBackgroundColor_(AppKit.NSColor.clearColor())
@@ -253,12 +308,12 @@ class App(AppKit.NSObject):
 
         # Live-activity wings: status dot on the left, session timer on the right.
         self.dot = Quartz.CALayer.layer()
-        self.dot.setBackgroundColor_(MUTED.CGColor())
+        self.dot.setBackgroundColor_(FAINT.CGColor())
         self.dot.setCornerRadius_(3.5)
         self.root.layer().addSublayer_(self.dot)
 
         self.timeLabel = _label("", AppKit.NSMakeRect(0, 0, 10, 10),
-                                _font(11.5, "semibold", rounded=True, mono=True), GREEN)
+                                _font(12, "semibold", rounded=True, mono=True), INK)
         self.timeLabel.setAlignment_(AppKit.NSTextAlignmentRight)
         self.root.addSubview_(self.timeLabel)
         self.session_start = None
@@ -278,8 +333,9 @@ class App(AppKit.NSObject):
         self.apply_state(animate=False)
         self.panel.orderFrontRegardless()
 
-        self.goals = fl.load_todays_goals()
-        if self.onboarding_mode:
+        if self.preview:
+            self._apply_preview(self.preview)
+        elif self.onboarding_mode:
             self.setExpanded_(True)
         elif self.goals:
             self.startTracker()
@@ -289,16 +345,41 @@ class App(AppKit.NSObject):
         AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0, self, "tick:", None, True)
 
+    @objc.python_method
+    def _apply_preview(self, name):
+        """Render one screen with canned state, for screenshots. Never touches the ledger."""
+        self.onboarding_mode = name == "setup"
+        self.goals = None if name == "goals" else (SAMPLE_GOALS if name != "setup" else None)
+        self.day_done = name == "done"
+        if name == "tracking":
+            self.tracker = _PreviewTracker()
+            self.status = {"session": "Tracking today", "line": "Watching Cursor"}
+        self.setExpanded_(True)
+        if os.environ.get("FL_PREVIEW_MENU"):
+            AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                2.0, self, "previewMenu:", None, False)
+
+    def previewMenu_(self, timer):
+        self.showMenu_(self.menuBtn)
+
     # ---------- geometry & animation ----------
+
+    @objc.python_method
+    def view_name(self):
+        if getattr(self, "onboarding_mode", False):
+            return "setup"
+        if self.tracker is not None:
+            return "tracking"
+        if self.goals is None and not self.day_done:
+            return "goals"
+        return "done"
 
     @objc.python_method
     def shape_rect(self, expanded):
         """Shape bounds in window coords (bottom-left origin, top edge = FRAME_H)."""
         if expanded:
-            if getattr(self, "onboarding_mode", False):
-                w, h = 430, self.mb + 232
-            else:
-                w, h = 430, self.mb + 190
+            w = 400
+            h = self.mb + VIEW_HEIGHTS[self.view_name()]
         else:
             w, h = self.notch_w + 150, self.mb + 12
         x0 = (FRAME_W - w) / 2.0
@@ -376,201 +457,274 @@ class App(AppKit.NSObject):
 
     # ---------- content states ----------
 
+    @objc.python_method
+    def _dot(self, color, frame):
+        v = AppKit.NSView.alloc().initWithFrame_(frame)
+        v.setWantsLayer_(True)
+        v.layer().setBackgroundColor_(color.CGColor())
+        v.layer().setCornerRadius_(frame.size.height / 2.0)
+        return v
+
+    @objc.python_method
+    def _row(self, symbol, title, detail, ok, button, y, W, pad):
+        """Setup row: icon tile, title + detail, then a check or one action button."""
+        tile = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(pad, y + 5, 32, 32))
+        tile.setWantsLayer_(True)
+        tile.layer().setBackgroundColor_(FILL.CGColor())
+        tile.layer().setCornerRadius_(8.0)
+        self.content.addSubview_(tile)
+        img = _symbol(symbol, 15)
+        if img is not None:
+            iv = AppKit.NSImageView.imageViewWithImage_(img)
+            iv.setFrame_(AppKit.NSMakeRect(pad + 6, y + 11, 20, 20))
+            iv.setContentTintColor_(INK)
+            self.content.addSubview_(iv)
+        self.content.addSubview_(_label(title, AppKit.NSMakeRect(pad + 44, y + 21, 210, 16),
+                                        _font(13, "medium"), INK))
+        det = _label(detail, AppKit.NSMakeRect(pad + 44, y + 5, 220, 15), _font(11.5), MUTED)
+        det.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
+        self.content.addSubview_(det)
+        if ok:
+            chk = _symbol("checkmark.circle.fill", 19)
+            if chk is not None:
+                cv = AppKit.NSImageView.imageViewWithImage_(chk)
+                cv.setFrame_(AppKit.NSMakeRect(W - pad - 20, y + 11, 20, 20))
+                cv.setContentTintColor_(GREEN)
+                self.content.addSubview_(cv)
+        elif button is not None:
+            label, action = button
+            bw = 22 + 7 * len(label)
+            self.content.addSubview_(self._pill(label, action,
+                                                AppKit.NSMakeRect(W - pad - bw, y + 9, bw, 26), "secondary", size=12))
+        return det
+
     def rebuild(self):
         for v in list(self.content.subviews()):
             v.removeFromSuperview()
+        self.field = None
+        self.pull_label = None
 
         H = self.content.frame().size.height
         W = self.content.frame().size.width
-        top = H - self.mb - 8   # stay clear of the physical notch band
-        pad = 20
+        top = H - self.mb - 10     # stay clear of the physical notch band
+        pad = 22
+        view = self.view_name()
 
-        # Header row: Centered FocusLedger title (18pt serif bold)
-        title = _label("FocusLedger", AppKit.NSMakeRect(pad, top - 26, W - 2 * pad, 24),
-                       _serif(18, weight="bold"), INK)
-        title.setAlignment_(AppKit.NSTextAlignmentCenter)
-        self.content.addSubview_(title)
+        # Header: quiet wordmark on the left, overflow menu on the right.
+        self.content.addSubview_(_label("FocusLedger", AppKit.NSMakeRect(pad, top - 17, 100, 16),
+                                        _font(12, "semibold"), FAINT))
+        if self.quick_mode:
+            self.content.addSubview_(_label("TEST MODE", AppKit.NSMakeRect(pad + 84, top - 16, 80, 14),
+                                            _font(10, "semibold"), ORANGE))
+        self.menuBtn = self._icon_button("ellipsis", "showMenu:",
+                                         AppKit.NSMakeRect(W - pad - 28, top - 22, 28, 24))
+        self.content.addSubview_(self.menuBtn)
 
-        # Status dot far left & mode/privacy badge far right
-        dot_col = OK_COLOR if self.tracker is not None else GREEN
-        self.content.addSubview_(_label("●", AppKit.NSMakeRect(pad, top - 22, 14, 16),
-                                        _font(9, "regular"), dot_col))
-        badge_str = "⚡ QUICK 1M" if self.quick_mode else "100% LOCAL"
-        tag = _label(badge_str, AppKit.NSMakeRect(W - pad - 95, top - 22, 95, 14),
-                     _font(9, "medium"), GREEN if self.quick_mode else FAINT)
-        tag.setAlignment_(AppKit.NSTextAlignmentRight)
-        self.content.addSubview_(tag)
+        title_f = _font(20, "semibold")
+        sub_f = _font(12.5)
 
-        # STATE 0: Native First-Run Onboarding & System Readiness Wizard
-        if getattr(self, "onboarding_mode", False):
+        if view == "setup":
             r = self.readiness
-            sub = _label("Welcome — verify your 100% on-device setup:",
-                         AppKit.NSMakeRect(pad, top - 50, W - 2 * pad, 16),
-                         _serif(12.5, italic=True), MUTED)
-            self.content.addSubview_(sub)
+            self.content.addSubview_(_label("Set up FocusLedger", AppKit.NSMakeRect(pad, top - 50, W - 2 * pad, 25),
+                                            title_f, INK))
+            self.content.addSubview_(_label("Everything runs on this Mac. Nothing is uploaded.",
+                                            AppKit.NSMakeRect(pad, top - 70, W - 2 * pad, 16), sub_f, MUTED))
 
-            rows = [
-                ("1. Local AI (Gemma 3)", r["ai_status"], r["ai_ok"],
-                 None if r["ai_ok"] else ("Start Ollama", "fixOllama:")),
-                ("2. Screen Capture & OCR", r["screen_status"], r["screen_ok"],
-                 None if r["screen_ok"] else ("Grant Access", "openScreenPrefs:")),
-                ("3. On-Device Voice", r["voice_status"], r["voice_ok"],
-                 ("Ready ✓", None) if r["voice_ok"] else ("Build Helper", "buildVoice:")),
-            ]
-            y_cursor = top - 84
-            for title_txt, detail_txt, ok_flag, btn_spec in rows:
-                icon = "✓" if ok_flag else "○"
-                ic_col = OK_COLOR if ok_flag else WARN_COLOR
-                self.content.addSubview_(_label(icon, AppKit.NSMakeRect(pad, y_cursor, 16, 18),
-                                                _font(12, "bold"), ic_col))
-                self.content.addSubview_(_label(title_txt, AppKit.NSMakeRect(pad + 18, y_cursor + 2, 185, 16),
-                                                _serif(12.5, weight="bold"), INK))
-                det = _label(detail_txt, AppKit.NSMakeRect(pad + 18, y_cursor - 12, 260, 14),
-                             _font(10.5, "regular"), MUTED)
-                det.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
-                self.content.addSubview_(det)
+            model = r["ai_model"]
+            label, size = gemma.model_label(model)
+            if r["ai_ok"]:
+                ai_detail, ai_btn = f"{label} · {model}", None
+            elif self.pull_pct is not None:
+                ai_detail, ai_btn = f"Downloading {label}… {int(self.pull_pct * 100)}%", None
+            elif not r["ai_installed"]:
+                ai_detail, ai_btn = "Ollama isn't installed", ("Get Ollama", "installOllama:")
+            elif not r["ai_server_ok"]:
+                ai_detail, ai_btn = "Ollama isn't running", ("Start", "fixOllama:")
+            else:
+                ai_detail, ai_btn = f"{label} model · {size} download", ("Download", "pullModel:")
+            if self.pull_error and not r["ai_ok"]:
+                ai_detail = self.pull_error
+            y0 = top - 124
+            self.pull_label = self._row("cpu", "On-device AI", ai_detail, r["ai_ok"], ai_btn, y0, W, pad)
+            self._row("display", "Screen reading",
+                      "Allowed" if r["screen_ok"] else "Needs Screen Recording access",
+                      r["screen_ok"], ("Allow", "openScreenPrefs:"), y0 - 46, W, pad)
+            self._row("mic.fill", "Voice goals",
+                      "On-device speech ready" if r["voice_ok"] else "Helper isn't built yet",
+                      r["voice_ok"], ("Build", "buildVoice:"), y0 - 92, W, pad)
 
-                if btn_spec is not None and btn_spec[1] is not None:
-                    b = self._pill(btn_spec[0], btn_spec[1], ACTIVE_BG,
-                                   AppKit.NSMakeRect(W - pad - 96, y_cursor - 6, 96, 22), text_color=INK)
-                    self.content.addSubview_(b)
-                else:
-                    ok_pill = _label("READY", AppKit.NSMakeRect(W - pad - 60, y_cursor - 2, 60, 14),
-                                     _font(9.5, "semibold"), OK_COLOR)
-                    ok_pill.setAlignment_(AppKit.NSTextAlignmentRight)
-                    self.content.addSubview_(ok_pill)
-                y_cursor -= 38
+            # Model size: segmented control with the chosen model's cost spelled out.
+            names = gemma.installed_models(0.5) or []
+            seg = AppKit.NSSegmentedControl.segmentedControlWithLabels_trackingMode_target_action_(
+                [lbl for _, lbl, _, _ in gemma.MODEL_CATALOG],
+                AppKit.NSSegmentSwitchTrackingSelectOne, self, "pickModel:")
+            seg.setFrame_(AppKit.NSMakeRect(pad, y0 - 130, W - 2 * pad, 24))
+            for i, (tag, _, _, _) in enumerate(gemma.MODEL_CATALOG):
+                if tag == model:
+                    seg.setSelectedSegment_(i)
+            self.content.addSubview_(seg)
+            notes = [f"{size} download" if model not in names else "Installed"]
+            if model in MODEL_NOTES:
+                notes.append(MODEL_NOTES[model])
+            if model == gemma.recommended_model():
+                notes.append("Recommended for this Mac")
+            elif gemma.ram_gb() < dict((m, n) for m, _, _, n in gemma.MODEL_CATALOG).get(model, 0):
+                notes.append("May run slowly on this Mac")
+            self.content.addSubview_(_label(f"{label}  ·  " + "  ·  ".join(notes),
+                                            AppKit.NSMakeRect(pad, y0 - 150, W - 2 * pad, 14), _font(11), FAINT))
 
-            # Bottom Onboarding Controls
-            self.content.addSubview_(self._pill("↻ Re-check", "recheckOnboarding:", GLASS_BG,
-                                                AppKit.NSMakeRect(pad, 14, 96, 26), text_color=INK))
-            self.content.addSubview_(self._pill("Preview demo", "demoReport:", GLASS_BG,
-                                                AppKit.NSMakeRect(pad + 104, 14, 104, 26), text_color=INK))
-            self.content.addSubview_(self._pill("Continue →", "finishOnboarding:", CREAM_CTA,
-                                                AppKit.NSMakeRect(W - pad - 114, 14, 114, 26), text_color=CREAM_TEXT))
-            return
+            ready = r["all_critical_ok"]
+            self.content.addSubview_(self._pill("Re-check", "recheckOnboarding:",
+                                                AppKit.NSMakeRect(pad, 16, 104, 32), "secondary", symbol="arrow.clockwise"))
+            cont = self._pill("Continue", "finishOnboarding:",
+                              AppKit.NSMakeRect(W - pad - 112, 16, 112, 32), "primary")
+            cont.setEnabled_(ready)
+            cont.setAlphaValue_(1.0 if ready else 0.35)
+            self.content.addSubview_(cont)
 
-        # STATE 1: Morning Goal Setup
-        if self.tracker is None and self.goals is None and not self.day_done:
-            self.content.addSubview_(_label("What are your goals today?",
-                                            AppKit.NSMakeRect(pad, top - 54, W - 2 * pad - 80, 20),
-                                            _serif(15, italic=False, weight="regular"), INK))
-            self.content.addSubview_(self._pill("✨ Sample", "fillSampleGoals:", GLASS_BG,
-                                                AppKit.NSMakeRect(W - pad - 74, top - 54, 74, 20), text_color=MUTED))
+        elif view == "goals":
+            self.content.addSubview_(_label("Today's goals", AppKit.NSMakeRect(pad, top - 50, W - 2 * pad, 25),
+                                            title_f, INK))
             self.content.addSubview_(_label("Say them or type them. Specific beats noble.",
-                                            AppKit.NSMakeRect(pad, top - 73, W - 2 * pad, 14),
-                                            _serif(11, italic=True), MUTED))
+                                            AppKit.NSMakeRect(pad, top - 70, W - 2 * pad, 16), sub_f, MUTED))
+            box = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(pad, top - 112, W - 2 * pad, 36))
+            box.setWantsLayer_(True)
+            box.layer().setBackgroundColor_(FILL.CGColor())
+            box.layer().setCornerRadius_(10.0)
+            self.content.addSubview_(box)
             self.field = AppKit.NSTextField.alloc().initWithFrame_(
-                AppKit.NSMakeRect(pad, top - 108, W - 2 * pad, 28))
-            self.field.setFont_(_font(12, "regular"))
+                AppKit.NSMakeRect(pad + 12, top - 112 + 9, W - 2 * pad - 24, 18))
+            self.field.setFont_(_font(13))
             self.field.setTextColor_(INK)
             self.field.setBezeled_(False)
-            self.field.setWantsLayer_(True)
-            self.field.layer().setBackgroundColor_(FIELD_BG.CGColor())
-            self.field.layer().setCornerRadius_(8.0)
+            self.field.setDrawsBackground_(False)
             self.field.setFocusRingType_(AppKit.NSFocusRingTypeNone)
-            self.field.setBackgroundColor_(FIELD_BG)
-            self.field.setDrawsBackground_(True)
-            self.field.setPlaceholderString_("Ship demo · study calc · keep Slack short")
+            self._placeholder("Ship the demo, study calc, keep Slack short")
             self.field.setTarget_(self); self.field.setAction_("startDay:")
             self.content.addSubview_(self.field)
 
-            self.micBtn = self._pill(self._mic_label(), "speakGoals:", GLASS_BG,
-                                     AppKit.NSMakeRect(pad, 14, 114, 26), text_color=INK)
+            title, sym = self._mic_label()
+            self.micBtn = self._pill(title, "speakGoals:", AppKit.NSMakeRect(pad, 16, 112, 32),
+                                     "secondary", symbol=sym)
             self.content.addSubview_(self.micBtn)
-
-            mode_label = "⚡ Quick 1m" if self.quick_mode else "⏱ 30m std"
-            mode_bg = ACTIVE_BG if self.quick_mode else GLASS_BG
-            self.content.addSubview_(self._pill(mode_label, "toggleMode:", mode_bg,
-                                                AppKit.NSMakeRect(pad + 122, 14, 96, 26),
-                                                text_color=GREEN if self.quick_mode else MUTED))
-            self.content.addSubview_(self._pill("⚙ Setup", "openOnboarding:", GLASS_BG,
-                                                AppKit.NSMakeRect(pad + 226, 14, 66, 26), text_color=MUTED))
-            self.content.addSubview_(self._pill("Start day", "startDay:", CREAM_CTA,
-                                                AppKit.NSMakeRect(W - pad - 90, 14, 90, 26), text_color=CREAM_TEXT))
+            self.content.addSubview_(self._pill("Start day", "startDay:",
+                                                AppKit.NSMakeRect(W - pad - 112, 16, 112, 32), "primary"))
             self.panel.makeKeyAndOrderFront_(None)
             AppKit.NSApp.activateIgnoringOtherApps_(True)
             self.panel.makeFirstResponder_(self.field)
 
-        # STATE 2: Active Session Tracking
-        elif self.tracker is not None:
+        elif view == "tracking":
+            self.content.addSubview_(self._dot(GREEN, AppKit.NSMakeRect(pad, top - 41, 8, 8)))
             self.sessLabel = _label(self.status["session"],
-                                    AppKit.NSMakeRect(pad, top - 54, W - 2 * pad, 20),
-                                    _serif(15, italic=False, weight="bold"), INK)
+                                    AppKit.NSMakeRect(pad + 16, top - 50, W - 2 * pad - 16, 25), title_f, INK)
             self.lineLabel = _label(self.status["line"],
-                                    AppKit.NSMakeRect(pad, top - 74, W - 2 * pad, 15),
-                                    _font(11, "regular"), MUTED)
+                                    AppKit.NSMakeRect(pad, top - 70, W - 2 * pad, 16), sub_f, MUTED)
             self.lineLabel.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
             self.content.addSubview_(self.sessLabel)
             self.content.addSubview_(self.lineLabel)
-            goals = _label("Goals · " + (self.goals or ""),
-                           AppKit.NSMakeRect(pad, top - 95, W - 2 * pad, 15),
-                           _serif(11, italic=True), FAINT)
+            goals = _label(self.goals or "", AppKit.NSMakeRect(pad, top - 92, W - 2 * pad, 15), _font(11.5), FAINT)
             goals.setLineBreakMode_(AppKit.NSLineBreakByTruncatingTail)
             self.content.addSubview_(goals)
+            self.content.addSubview_(self._pill("View report", "viewReport:",
+                                                AppKit.NSMakeRect(pad, 16, 124, 32), "secondary", symbol="doc.text"))
+            self.content.addSubview_(self._pill("End day", "endDay:",
+                                                AppKit.NSMakeRect(W - pad - 112, 16, 112, 32), "primary"))
 
-            self.content.addSubview_(self._pill("View report", "viewReport:", GLASS_BG,
-                                                AppKit.NSMakeRect(pad, 14, 96, 26), text_color=INK))
-            self.content.addSubview_(self._pill("Demo day", "demoReport:", GLASS_BG,
-                                                AppKit.NSMakeRect(pad + 104, 14, 92, 26), text_color=INK))
-            self.content.addSubview_(self._pill("New day", "resetDay:", GLASS_BG,
-                                                AppKit.NSMakeRect(pad + 204, 14, 84, 26), text_color=MUTED))
-            self.content.addSubview_(self._pill("End my day", "endDay:", CREAM_CTA,
-                                                AppKit.NSMakeRect(W - pad - 94, 14, 94, 26), text_color=CREAM_TEXT))
-
-        # STATE 3: Day Closed / Idle
         else:
-            msg = "Day closed — report is open in your browser." if self.day_done else "Not tracking."
-            self.content.addSubview_(_label(msg, AppKit.NSMakeRect(pad, top - 56, W - 2 * pad, 20),
-                                            _serif(14, italic=False, weight="regular"), INK))
-            sub = _label("Start a New day anytime to test again, or explore the full Demo day report.",
-                         AppKit.NSMakeRect(pad, top - 78, W - 2 * pad, 15),
-                         _serif(11, italic=True), MUTED)
-            self.content.addSubview_(sub)
-
-            self.content.addSubview_(self._pill("View report", "viewReport:", GLASS_BG,
-                                                AppKit.NSMakeRect(pad, 14, 96, 26), text_color=INK))
-            self.content.addSubview_(self._pill("Demo day", "demoReport:", GLASS_BG,
-                                                AppKit.NSMakeRect(pad + 104, 14, 92, 26), text_color=INK))
-            self.content.addSubview_(self._pill("New day", "resetDay:", CREAM_CTA,
-                                                AppKit.NSMakeRect(pad + 204, 14, 96, 26), text_color=CREAM_TEXT))
-            q = self._pill("Quit", None, GLASS_BG,
-                           AppKit.NSMakeRect(W - pad - 82, 14, 82, 26), text_color=INK)
-            q.setTarget_(AppKit.NSApp); q.setAction_("terminate:")
-            self.content.addSubview_(q)
+            headline = "Day complete" if self.day_done else "Not tracking"
+            sub = ("Your report is open in the browser." if self.day_done
+                   else "Start a new day whenever you're ready.")
+            self.content.addSubview_(_label(headline, AppKit.NSMakeRect(pad, top - 50, W - 2 * pad, 25), title_f, INK))
+            self.content.addSubview_(_label(sub, AppKit.NSMakeRect(pad, top - 70, W - 2 * pad, 16), sub_f, MUTED))
+            self.content.addSubview_(self._pill("View report", "viewReport:",
+                                                AppKit.NSMakeRect(pad, 16, 124, 32), "secondary", symbol="doc.text"))
+            self.content.addSubview_(self._pill("New day", "resetDay:",
+                                                AppKit.NSMakeRect(W - pad - 112, 16, 112, 32), "primary"))
 
     @objc.python_method
-    def _pill(self, title, action, bg, frame, text_color=None):
-        """Rounded pill button: borderless, layer-backed capsule with serif/sans typography."""
-        if text_color is None:
-            text_color = CREAM_TEXT if bg == CREAM_CTA else INK
-        btn = AppKit.NSButton.alloc().initWithFrame_(frame)
+    def _placeholder(self, text):
+        self.field.setPlaceholderAttributedString_(AppKit.NSAttributedString.alloc().initWithString_attributes_(
+            text, {AppKit.NSFontAttributeName: _font(13), AppKit.NSForegroundColorAttributeName: FAINT}))
+
+    @objc.python_method
+    def _style_pill(self, btn, title, kind="secondary", symbol=None, size=13):
+        primary = kind == "primary"
+        color = ON_PRIMARY if primary else INK
+        font = _font(size, "semibold" if primary else "medium")
+        img = _symbol(symbol, size) if symbol else None
+        btn.setAttributedTitle_(AppKit.NSAttributedString.alloc().initWithString_attributes_(
+            ("  " + title) if img is not None else title,
+            {AppKit.NSFontAttributeName: font, AppKit.NSForegroundColorAttributeName: color}))
+        btn.setImage_(img)
+        if img is not None:
+            btn.setImagePosition_(AppKit.NSImageLeft)
+            btn.setImageHugsTitle_(True)
+            btn.setContentTintColor_(color)
+
+    @objc.python_method
+    def _pill(self, title, action, frame, kind="secondary", symbol=None, size=13):
+        """Capsule button. One primary (white) per screen; everything else is a quiet fill."""
+        btn = PillButton.alloc().initWithFrame_(frame)
         btn.setBordered_(False)
         btn.setWantsLayer_(True)
-        btn.layer().setBackgroundColor_(bg.CGColor())
+        btn.base_bg = PRIMARY if kind == "primary" else FILL
+        btn.hover_bg = PRIMARY_HOVER if kind == "primary" else FILL_HOVER
+        btn.layer().setBackgroundColor_(btn.base_bg.CGColor())
         btn.layer().setCornerRadius_(frame.size.height / 2.0)
-        font = _serif(12, weight="bold") if bg == CREAM_CTA else _font(11.0, "medium")
-        attrs = {
-            AppKit.NSFontAttributeName: font,
-            AppKit.NSForegroundColorAttributeName: text_color,
-        }
-        btn.setAttributedTitle_(
-            AppKit.NSAttributedString.alloc().initWithString_attributes_(title, attrs))
+        self._style_pill(btn, title, kind, symbol, size)
         if action:
             btn.setTarget_(self); btn.setAction_(action)
         return btn
 
     @objc.python_method
-    def _pill_title(self, btn, title):
-        """Retitle an existing pill."""
-        attrs = {
-            AppKit.NSFontAttributeName: _font(11.0, "medium"),
-            AppKit.NSForegroundColorAttributeName: INK,
-        }
-        btn.setAttributedTitle_(
-            AppKit.NSAttributedString.alloc().initWithString_attributes_(title, attrs))
+    def _icon_button(self, symbol, action, frame):
+        btn = PillButton.alloc().initWithFrame_(frame)
+        btn.setBordered_(False)
+        btn.setWantsLayer_(True)
+        btn.base_bg = AppKit.NSColor.clearColor()
+        btn.hover_bg = FILL
+        btn.layer().setCornerRadius_(frame.size.height / 2.0)
+        btn.setImage_(_symbol(symbol, 15, "semibold"))
+        btn.setContentTintColor_(MUTED)
+        btn.setTarget_(self); btn.setAction_(action)
+        return btn
 
-    # ---------- onboarding & mode actions ----------
+    # ---------- menu, onboarding & model actions ----------
+
+    @objc.python_method
+    def _menu_item(self, menu, title, action, state=False, rep=None):
+        item = menu.addItemWithTitle_action_keyEquivalent_(title, action, "")
+        item.setTarget_(self)
+        item.setState_(AppKit.NSControlStateValueOn if state else AppKit.NSControlStateValueOff)
+        if rep is not None:
+            item.setRepresentedObject_(rep)
+        return item
+
+    def showMenu_(self, sender):
+        menu = AppKit.NSMenu.alloc().init()
+        menu.setAutoenablesItems_(False)
+        view = self.view_name()
+        self._menu_item(menu, "Setup…", "openOnboarding:")
+        sub = AppKit.NSMenu.alloc().init()
+        for tag, label, size, _ in gemma.MODEL_CATALOG:
+            self._menu_item(sub, f"{label} — {tag} ({size})", "pickModelFromMenu:",
+                            state=(tag == gemma.get_model()), rep=tag)
+        holder = menu.addItemWithTitle_action_keyEquivalent_("Model", None, "")
+        holder.setSubmenu_(sub)
+        menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        self._menu_item(menu, "Test mode (1-minute checkpoints)", "toggleMode:", state=self.quick_mode)
+        if view == "goals":
+            self._menu_item(menu, "Fill sample goals", "fillSampleGoals:")
+        self._menu_item(menu, "Preview a full-day report", "demoReport:")
+        if view in ("tracking", "done"):
+            self._menu_item(menu, "Start a new day", "resetDay:")
+        menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        self._menu_item(menu, "Quit FocusLedger", "quitApp:")
+        menu.popUpMenuPositioningItem_atLocation_inView_(
+            None, AppKit.NSMakePoint(0, sender.bounds().size.height + 4), sender)
+
+    def quitApp_(self, sender):
+        AppKit.NSApp.terminate_(None)
 
     def openOnboarding_(self, sender):
         self.readiness = check_system_readiness()
@@ -592,14 +746,23 @@ class App(AppKit.NSObject):
             self.startTracker()
         self.apply_state(animate=True)
 
+    def installOllama_(self, sender):
+        subprocess.run(["open", "https://ollama.com/download"], check=False)
+
     def fixOllama_(self, sender):
         def _bg():
             try:
-                subprocess.Popen(["ollama", "serve"],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                time.sleep(2.0)
+                if shutil.which("ollama"):
+                    subprocess.Popen(["ollama", "serve"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.run(["open", "-a", "Ollama"], check=False)
             except OSError:
                 pass
+            for _ in range(16):          # wait up to ~8s for the daemon
+                time.sleep(0.5)
+                if gemma.installed_models(0.5) is not None:
+                    break
             self.readiness = check_system_readiness()
             self._on_main(self.rebuild)
         threading.Thread(target=_bg, daemon=True).start()
@@ -622,6 +785,45 @@ class App(AppKit.NSObject):
             self._on_main(self.rebuild)
         threading.Thread(target=_bg, daemon=True).start()
 
+    @objc.python_method
+    def _choose_model(self, tag):
+        gemma.set_model(tag)
+        self.pull_error = None
+        self.readiness = check_system_readiness()
+        self.rebuild()
+
+    def pickModel_(self, sender):
+        self._choose_model(gemma.MODEL_CATALOG[sender.selectedSegment()][0])
+
+    def pickModelFromMenu_(self, sender):
+        self._choose_model(sender.representedObject())
+
+    def pullModel_(self, sender):
+        tag = gemma.get_model()
+        self.pull_pct, self.pull_error = 0.0, None
+
+        def _progress(frac):
+            self.pull_pct = frac
+            self._on_main(self._update_pull_label)
+
+        def _bg():
+            try:
+                gemma.pull_model(tag, _progress)
+            except Exception as e:
+                self.pull_error = f"Download failed: {str(e)[:48]}"
+            self.pull_pct = None
+            self.readiness = check_system_readiness()
+            self._on_main(self.rebuild)
+        threading.Thread(target=_bg, daemon=True).start()
+        self.rebuild()
+
+    @objc.python_method
+    def _update_pull_label(self):
+        lb = getattr(self, "pull_label", None)
+        if lb is not None and lb.superview() is not None and self.pull_pct is not None:
+            label, _ = gemma.model_label(gemma.get_model())
+            lb.setStringValue_(f"Downloading {label}… {int(self.pull_pct * 100)}%")
+
     def toggleMode_(self, sender):
         saved_text = ""
         if getattr(self, "field", None) is not None:
@@ -641,7 +843,9 @@ class App(AppKit.NSObject):
 
     @objc.python_method
     def _mic_label(self):
-        return "◉  Listening…" if getattr(self, "dictating", False) else "🎙  Speak goals"
+        if getattr(self, "dictating", False):
+            return "Listening", "waveform"
+        return "Speak", "mic.fill"
 
     def speakGoals_(self, sender):
         if getattr(self, "dictating", False):
@@ -649,10 +853,10 @@ class App(AppKit.NSObject):
             return
         if not os.path.exists(DICTATE_APP):
             self.field.setStringValue_("")
-            self.field.setPlaceholderString_("helper not built — run ./build_dictate.sh")
+            self._placeholder("Voice helper isn't built yet. Open Setup to build it.")
             return
         self.dictating = True
-        self._pill_title(self.micBtn, self._mic_label())
+        self._style_pill(self.micBtn, *self._mic_label()[:1], symbol=self._mic_label()[1])
         threading.Thread(target=self._runDictation, daemon=True).start()
 
     @objc.python_method
@@ -708,10 +912,10 @@ class App(AppKit.NSObject):
         self.dictating = False
         btn = getattr(self, "micBtn", None)
         if btn is not None and btn.superview() is not None:
-            self._pill_title(btn, self._mic_label())
+            self._style_pill(btn, self._mic_label()[0], symbol=self._mic_label()[1])
         f = getattr(self, "field", None)
         if error and f is not None and f.superview() is not None and not f.stringValue().strip():
-            f.setPlaceholderString_(error)
+            self._placeholder(error)
 
     @objc.python_method
     def _stop_dictation(self):
@@ -727,7 +931,7 @@ class App(AppKit.NSObject):
     def startDay_(self, sender):
         goals = self.field.stringValue().strip()
         if not goals:
-            self.field.setPlaceholderString_("Please enter or speak your goals first (or click ✨ Sample)")
+            self._placeholder("Add at least one goal to start")
             return
         self.goals = goals
         self.day_done = False
@@ -745,8 +949,31 @@ class App(AppKit.NSObject):
             [PYTHON, "-u", os.path.join(BASE, "focusledger.py")],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=BASE, env=env)
         threading.Thread(target=self._reader, daemon=True).start()
-        self.status["session"] = "tracking (⚡ 1m checkpoints)" if self.quick_mode else "tracking"
+        self.status = dict(IDLE_STATUS)
         self.dot.setBackgroundColor_(GREEN.CGColor())
+
+    @objc.python_method
+    def _humanize(self, line):
+        """Turn tracker log lines into short sentences. Returns (session, line); None keeps the old one."""
+        if line.startswith("▶"):
+            return "Tracking today", "Session started"
+        if line.startswith("■"):
+            return "Paused", "You stepped away. Resuming when you're back"
+        if line.startswith("👁"):
+            app = line[1:].strip().split(" — ")[0]
+            return None, f"Watching {app}"
+        if line.startswith("🔎"):
+            return None, "Reading your screen"
+        if line.startswith("🧠"):
+            return None, "Gemma is reviewing the last block"
+        if line.startswith("⛔"):
+            return None, "Skipped a private window"
+        if line.startswith("📒"):
+            parts = [p.strip() for p in line.split("|")]
+            cat = parts[0].split(":")[-1].strip().replace("_", " ").capitalize()
+            aligned = len(parts) > 1 and "True" in parts[1]
+            return None, f"Last block: {cat}, {'on goal' if aligned else 'off goal'}"
+        return None, None
 
     def _reader(self):
         from datetime import datetime
@@ -758,24 +985,26 @@ class App(AppKit.NSObject):
             if not line:
                 continue
             if line.startswith("▶"):
-                self.status["session"] = line
                 self.session_start = datetime.now()
             elif line.startswith("■"):
-                self.status["session"] = line
                 self.session_start = None
             elif line.startswith("✓ checkpoint flushed"):
                 self.flush_event.set()
-            elif line.startswith(("👁", "📒", "🧠", "⛔", "🔎")):
-                self.status["line"] = line
+                continue
+            sess, human = self._humanize(line)
+            if sess:
+                self.status["session"] = sess
+            if human:
+                self.status["line"] = human
 
     def viewReport_(self, sender):
         """Flush any active buffer via SIGUSR1, then render and open today's report."""
         ledger = os.path.join(BASE, "ledger.jsonl")
         if not os.path.exists(ledger) and self.tracker is None:
-            self.status["line"] = "no ledger yet — click 'Demo day' or start your day first"
+            self.status["line"] = "Nothing to report yet. Start your day first"
             self.rebuild()
             return
-        self.status["line"] = "🧠 judging live activity & generating report with Gemma…"
+        self.status["line"] = "Gemma is writing your report…"
         self.rebuild()
         threading.Thread(target=self._renderReport, daemon=True).start()
 
@@ -789,12 +1018,12 @@ class App(AppKit.NSObject):
                 pass
         subprocess.run([PYTHON, os.path.join(BASE, "report.py"),
                         os.path.join(BASE, "ledger.jsonl"), "--open"], cwd=BASE)
-        self.status["line"] = "✓ report opened in your browser"
+        self.status["line"] = "Report opened in your browser"
         AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(self.rebuild)
 
     def demoReport_(self, sender):
         """Build a full-day demo report (combining real session if present + seeded sessions)."""
-        self.status["line"] = "🧠 synthesizing full-day demo report with Gemma…"
+        self.status["line"] = "Gemma is writing a sample report…"
         if not self.onboarding_mode:
             self.rebuild()
         threading.Thread(target=self._renderDemoReport, daemon=True).start()
@@ -821,7 +1050,7 @@ class App(AppKit.NSObject):
 
         subprocess.run([PYTHON, os.path.join(BASE, "report.py"),
                         demo_ledger, "--out", demo_out, "--open"], cwd=BASE)
-        self.status["line"] = "✓ demo report opened in your browser"
+        self.status["line"] = "Sample report opened in your browser"
         AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(self.rebuild)
 
     def resetDay_(self, sender):
@@ -837,13 +1066,13 @@ class App(AppKit.NSObject):
         self.goals = None
         self.day_done = False
         self.session_start = None
-        self.status = {"line": "idle — waiting for keyboard/mouse activity", "session": "session ready"}
-        self.dot.setBackgroundColor_(MUTED.CGColor())
+        self.status = dict(IDLE_STATUS)
+        self.dot.setBackgroundColor_(FAINT.CGColor())
         self.apply_state(animate=True)
 
     def endDay_(self, sender):
-        self.status["session"] = "closing day…"
-        self.status["line"] = "flushing final checkpoint (Gemma is judging)"
+        self.status["session"] = "Wrapping up"
+        self.status["line"] = "Gemma is reading your day"
         self.rebuild()
         threading.Thread(target=self._closeAndReport, daemon=True).start()
 
@@ -857,7 +1086,7 @@ class App(AppKit.NSObject):
                 proc.kill()
         self.day_done = True
         self.session_start = None
-        self.dot.setBackgroundColor_(MUTED.CGColor())
+        self.dot.setBackgroundColor_(FAINT.CGColor())
         subprocess.run([PYTHON, os.path.join(BASE, "report.py"),
                         os.path.join(BASE, "ledger.jsonl"), "--open"], cwd=BASE)
         AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(self.rebuild)
@@ -868,7 +1097,7 @@ class App(AppKit.NSObject):
             if self.session_start is not None:
                 mins = int((datetime.now() - self.session_start).total_seconds() // 60)
                 self.timeLabel.setStringValue_(f"{mins // 60}:{mins % 60:02d}")
-                self.timeLabel.setTextColor_(GREEN)
+                self.timeLabel.setTextColor_(INK)
             else:
                 self.timeLabel.setStringValue_("–" if self.tracker else "")
                 self.timeLabel.setTextColor_(FAINT)

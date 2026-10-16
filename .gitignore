@@ -1,7 +1,10 @@
 # Real activity data — never commit (ledger.sample.jsonl is the committed sample)
 ledger.jsonl
+ledger.prev.jsonl
 ledger.demo.jsonl
 /report.html
+/report.demo.html
+.onboarding_done
 
 # Screenshots (should be deleted at runtime anyway, but belt and suspenders)
 captures/
@@ -14,6 +17,7 @@ __pycache__/
 *.pyc
 .DS_Store
 
-# py2app build output (rebuild locally with ./build_notch_app.sh)
-build/
-dist/
+# Compiled helpers & app bundles (rebuild: ./build_dictate.sh / ./build_app.sh)
+dictate
+Dictate.app/
+FocusLedger.app/
